@@ -702,12 +702,9 @@ function TabHistory({ agg, sprints, team, persons, allRecords }) {
   var allLead = allRecords.filter(function(r) { return (team === "all" || r.team === team) && matchesPerson(r.people, persons) && r.done; }).map(leadDays).filter(function(v) { return v != null; });
   var leadMedian = median(allLead);
 
-  var sec = useSections("history", ["estimado", "done", "evol_done", "completion", "throughput", "leadtime"]);
+  var sec = useSections("history", ["done", "evol_done", "completion", "throughput"]);
 
   var defs = {
-    estimado: { title: "Estimado por Sprint" + (team !== "all" ? " — " + team : ""), render: function() {
-      return (<ResponsiveContainer width="100%" height={240}><BarChart data={chartData}><CartesianGrid strokeDasharray="3 3" stroke={C.mint} /><XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} /><YAxis tick={{ fill: C.tm, fontSize: 11 }} /><Tooltip contentStyle={TT} /><Bar dataKey="estimado" name="Estimado" fill={C.g2} radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer>);
-    }},
     done: { title: "Velocity — Done por Sprint", render: function() {
       return (<ResponsiveContainer width="100%" height={240}><BarChart data={chartData}><CartesianGrid strokeDasharray="3 3" stroke={C.mint} /><XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} /><YAxis tick={{ fill: C.tm, fontSize: 11 }} /><Tooltip contentStyle={TT} /><Bar dataKey="done" name="Done" fill={C.g1} radius={[6, 6, 0, 0]} /><ReferenceLine y={avgMoving} stroke={C.purple} strokeDasharray="6 4" strokeWidth={2} label={<AvgLabel text={"Média móvel (4): " + avgMoving} color={C.purple} />} /></BarChart></ResponsiveContainer>);
     }},
@@ -719,9 +716,6 @@ function TabHistory({ agg, sprints, team, persons, allRecords }) {
     }},
     throughput: { title: "Throughput — Cards concluídos por Sprint", render: function() {
       return (<ResponsiveContainer width="100%" height={240}><BarChart data={throughputData}><CartesianGrid strokeDasharray="3 3" stroke={C.mint} /><XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} /><YAxis tick={{ fill: C.tm, fontSize: 11 }} allowDecimals={false} /><Tooltip contentStyle={TT} /><Bar dataKey="cards" name="Cards done" fill={C.g2} radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer>);
-    }},
-    leadtime: { title: "Lead time mediano — criação → conclusão (dias)", render: function() {
-      return (<div><ResponsiveContainer width="100%" height={240}><LineChart data={leadData}><CartesianGrid strokeDasharray="3 3" stroke={C.mint} /><XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} /><YAxis tick={{ fill: C.tm, fontSize: 11 }} unit="d" /><Tooltip contentStyle={TT} formatter={function(v) { return v + " dias"; }} /><Line type="monotone" dataKey="lead" name="Lead mediano" stroke={C.purple} strokeWidth={2} dot={{ r: 3 }} /></LineChart></ResponsiveContainer><div style={{ fontSize: 9, color: C.tl, marginTop: 8, fontStyle: "italic", fontFamily: "Montserrat" }}>Mediana do tempo entre criação e conclusão do card (tempo no sistema — inclui espera no backlog; depende de quando o card foi criado). Mediana geral no recorte: {leadMedian} dias.</div></div>);
     }},
   };
 
