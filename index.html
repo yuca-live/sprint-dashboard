@@ -1,0 +1,1468 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sprint Dashboard — Yuca</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@400;600;700;800&family=Montserrat:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  html, body { margin: 0; padding: 0; background: #F7FAF8; }
+  #root { min-height: 100vh; }
+</style>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+<script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useCallback } = React;
+const {
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
+  PieChart, Pie, Cell, LineChart, Line, Legend, CartesianGrid,
+  AreaChart, Area, ReferenceLine
+} = Recharts;
+
+// storage shim — usa localStorage no lugar do window.storage do claude.ai
+window.storage = window.storage || {
+  get: async function (k) { try { var v = localStorage.getItem(k); return v == null ? null : { value: v }; } catch (e) { return null; } },
+  set: async function (k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+  delete: async function (k) { try { localStorage.removeItem(k); } catch (e) {} },
+};
+
+// ── Brand tokens ──
+const C = {
+  g1: "#12C68B", g2: "#098C7B", g3: "#005956", navy: "#062840",
+  coral: "#CE6363", pink: "#FF9E9D", cream: "#FBEACA", lilac: "#E8B5FF",
+  purple: "#7B17A2", mint: "#C9E6CD",
+  w: "#fff", off: "#F7FAF8", lg: "#E8F5F0",
+  td: "#062840", tm: "#4A6B6A", tl: "#7A9E9C",
+};
+const PAL = [C.g1, C.g2, "#F59E0B", C.coral, "#3B82F6", C.purple, C.pink, C.g3, "#14B8A6", "#EC4899"];
+const ST_ORDER = ["Prod", "Tested", "To Test", "Development", "To-do", "Sprint Backlog", "Backlog", "Blocked"];
+const ST_COLOR = { Prod: C.g1, Tested: "#3B82F6", "To Test": "#F59E0B", Development: C.purple, "To-do": C.tl, "Sprint Backlog": "#CBD5E1", Backlog: "#94A3B8", Blocked: C.coral };
+const ST_SHORT = { Prod: "Prod", Tested: "Tested", "To Test": "To Test", Development: "Dev", "To-do": "To-do", "Sprint Backlog": "S.BL", Backlog: "Backlog", Blocked: "Blocked" };
+const TT = { background: C.w, border: "1px solid " + C.mint, borderRadius: 10, color: C.td, fontSize: 12, fontFamily: "Montserrat" };
+
+// ── CSV ──
+function parseCsvLine(line) {
+  var result = [], cur = "", inQ = false;
+  for (var i = 0; i < line.length; i++) {
+    if (line[i] === '"') { inQ = !inQ; }
+    else if (line[i] === "," && !inQ) { result.push(cur); cur = ""; }
+    else { cur += line[i]; }
+  }
+  result.push(cur);
+  return result;
+}
+
+function parseCSV(text) {
+  var lines = text.replace(/^﻿/, "").split("\n");
+  if (lines.length < 2) return [];
+  var headers = parseCsvLine(lines[0]);
+  var rows = [];
+  for (var i = 1; i < lines.length; i++) {
+    if (!lines[i].trim()) continue;
+    var vals = parseCsvLine(lines[i]);
+    var obj = {};
+    for (var j = 0; j < headers.length; j++) {
+      obj[headers[j].trim()] = (vals[j] || "").trim();
+    }
+    rows.push(obj);
+  }
+  return rows;
+}
+
+function cleanUserStory(val) {
+  if (!val) return null;
+  var idx = val.indexOf(" (https://");
+  return idx > 0 ? val.substring(0, idx).trim() : val.trim();
+}
+
+function processRows(rows) {
+  var records = [];
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    var time = row["Time"] || "";
+    var teams = [];
+    if (time.indexOf("Back") >= 0 || time.indexOf("Front") >= 0) teams.push("Tech");
+    if (time.indexOf("Data") >= 0) teams.push("Data");
+    if (teams.length === 0) continue;
+
+    var spRaw = row["Sprints"] || "";
+    var spNums = [];
+    var re = /Sprint (\d+)/g;
+    var m;
+    while ((m = re.exec(spRaw)) !== null) spNums.push(parseInt(m[1]));
+    spNums.sort(function(a, b) { return a - b; });
+
+    var est = parseFloat(row["Story Points - Estimado"]) || 0;
+    var real = parseFloat(row["Story Points - Realizado"]) || 0;
+    var sust = row["Sustentação"] === "Yes";
+    var done = row["Status"] === "Prod";
+    var curSp = row["currentSprints"] || "";
+    var inCurrent = curSp.indexOf("true") >= 0;
+    var us = cleanUserStory(row["User Story"] || "");
+    var assignRaw = row["Assign"] || "";
+    var people = assignRaw.split(",").map(function(s) { return s.trim(); }).filter(Boolean);
+
+    for (var t = 0; t < teams.length; t++) {
+      records.push({
+        name: (row["Name"] || "").substring(0, 90),
+        team: teams[t],
+        sprints: spNums,
+        status: row["Status"] || "Backlog",
+        done: done,
+        est: est,
+        real: real,
+        sust: sust,
+        inCurrent: inCurrent,
+        us: us,
+        people: people,
+        assign: people[0] || "",
+      });
+    }
+  }
+  return records;
+}
+
+function aggregate(records) {
+  var map = {};
+  var allSp = {};
+  for (var i = 0; i < records.length; i++) {
+    var r = records[i];
+    var sps = r.sprints.length > 0 ? r.sprints : [0];
+    var lastSp = sps[sps.length - 1]; // last sprint = where it was completed
+    for (var j = 0; j < sps.length; j++) {
+      var sp = sps[j];
+      allSp[sp] = true;
+      var k = sp + "|" + r.team + "|" + (r.sust ? "1" : "0");
+      if (!map[k]) map[k] = { sprint: sp, team: r.team, sust: r.sust, cards: 0, est: 0, real: 0, dc: 0, de: 0, dr: 0 };
+      map[k].cards++;
+      map[k].est += r.est;
+      map[k].real += r.real;
+      // Done only counts in the LAST sprint (where it was actually delivered)
+      if (r.done && sp === lastSp) { map[k].dc++; map[k].de += r.est; map[k].dr += r.real; }
+    }
+  }
+  var sprints = Object.keys(allSp).map(Number).filter(function(s) { return s > 0; }).sort(function(a, b) { return a - b; });
+  return { agg: Object.values(map), sprints: sprints };
+}
+
+// Done only counts in the last sprint (where it was actually delivered)
+function isDoneInSprint(r, sp) {
+  if (!r.done) return false;
+  var lastSp = r.sprints.length > 0 ? r.sprints[r.sprints.length - 1] : 0;
+  return sp === lastSp;
+}
+
+// ── Reusable UI ──
+function Pill({ label, active, onClick, color }) {
+  return (
+    <button onClick={onClick} style={{
+      padding: "5px 14px", borderRadius: 16, cursor: "pointer",
+      fontSize: 11, fontWeight: 600, fontFamily: "Montserrat",
+      background: active ? (color || C.g2) : C.w,
+      color: active ? C.w : C.tm,
+      border: "1.5px solid " + (active ? (color || C.g2) : C.mint),
+      boxShadow: active ? ("0 2px 8px " + (color || C.g2) + "33") : "none",
+      transition: "all 0.2s",
+    }}>{label}</button>
+  );
+}
+
+function Stat({ label, value, sub, accent }) {
+  return (
+    <div style={{ background: C.w, borderRadius: 14, padding: "16px 18px", flex: 1, minWidth: 130, border: "1px solid " + C.mint, boxShadow: "0 1px 4px rgba(0,89,86,0.06)" }}>
+      <div style={{ fontSize: 9, color: C.tm, textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 5, fontFamily: "Montserrat", fontWeight: 600 }}>{label}</div>
+      <div style={{ fontSize: 28, fontWeight: 800, color: accent || C.td, lineHeight: 1.1, fontFamily: "Fraunces" }}>{value}</div>
+      {sub && <div style={{ fontSize: 10, color: C.tl, marginTop: 4, fontFamily: "Montserrat" }}>{sub}</div>}
+    </div>
+  );
+}
+
+function Box({ title, children }) {
+  return (
+    <div style={{ background: C.w, borderRadius: 14, padding: 20, border: "1px solid " + C.mint }}>
+      {title && <div style={{ fontSize: 13, fontWeight: 700, color: C.td, marginBottom: 14, fontFamily: "Fraunces" }}>{title}</div>}
+      {children}
+    </div>
+  );
+}
+
+// Section system: collapsible + reorderable panels
+function SectionPanel({ id, title, collapsed, onToggle, onMoveUp, onMoveDown, isFirst, isLast, children }) {
+  return (
+    <div style={{ background: C.w, borderRadius: 14, border: "1px solid " + C.mint, overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", cursor: "pointer", gap: 8, userSelect: "none" }} onClick={onToggle}>
+        <span style={{ fontSize: 11, color: C.tm, transition: "transform 0.2s", transform: collapsed ? "rotate(-90deg)" : "rotate(0deg)", flexShrink: 0 }}>▼</span>
+        <span style={{ fontSize: 13, fontWeight: 700, color: C.td, fontFamily: "Fraunces", flex: 1 }}>{title}</span>
+        <div style={{ display: "flex", gap: 2 }} onClick={function(e) { e.stopPropagation(); }}>
+          <button disabled={isFirst} onClick={onMoveUp} style={{ width: 24, height: 24, borderRadius: 6, border: "1px solid " + C.mint, background: isFirst ? C.off : C.w, color: isFirst ? C.mint : C.tm, cursor: isFirst ? "default" : "pointer", fontSize: 10, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Montserrat" }}>↑</button>
+          <button disabled={isLast} onClick={onMoveDown} style={{ width: 24, height: 24, borderRadius: 6, border: "1px solid " + C.mint, background: isLast ? C.off : C.w, color: isLast ? C.mint : C.tm, cursor: isLast ? "default" : "pointer", fontSize: 10, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Montserrat" }}>↓</button>
+        </div>
+      </div>
+      {!collapsed && <div style={{ padding: "0 20px 20px" }}>{children}</div>}
+    </div>
+  );
+}
+
+function useSections(tabId, defaultOrder) {
+  var [state, setState] = useState({ order: defaultOrder, hidden: {} });
+
+  var toggle = function(id) {
+    setState(function(prev) {
+      var h = Object.assign({}, prev.hidden);
+      h[id] = !h[id];
+      return { order: prev.order, hidden: h };
+    });
+  };
+
+  var moveUp = function(id) {
+    setState(function(prev) {
+      var idx = prev.order.indexOf(id);
+      if (idx <= 0) return prev;
+      var newOrder = prev.order.slice();
+      newOrder[idx] = newOrder[idx - 1];
+      newOrder[idx - 1] = id;
+      return { order: newOrder, hidden: prev.hidden };
+    });
+  };
+
+  var moveDown = function(id) {
+    setState(function(prev) {
+      var idx = prev.order.indexOf(id);
+      if (idx < 0 || idx >= prev.order.length - 1) return prev;
+      var newOrder = prev.order.slice();
+      newOrder[idx] = newOrder[idx + 1];
+      newOrder[idx + 1] = id;
+      return { order: newOrder, hidden: prev.hidden };
+    });
+  };
+
+  return { order: state.order, hidden: state.hidden, toggle: toggle, moveUp: moveUp, moveDown: moveDown };
+}
+
+function renderSections(sections, sectionState, sectionDefs) {
+  return sectionState.order.map(function(id, idx) {
+    var def = sectionDefs[id];
+    if (!def) return null;
+    return (
+      <SectionPanel key={id} id={id} title={def.title} collapsed={!!sectionState.hidden[id]}
+        onToggle={function() { sectionState.toggle(id); }}
+        onMoveUp={function() { sectionState.moveUp(id); }}
+        onMoveDown={function() { sectionState.moveDown(id); }}
+        isFirst={idx === 0} isLast={idx === sectionState.order.length - 1}>
+        {def.render()}
+      </SectionPanel>
+    );
+  });
+}
+
+function Donut({ data, total, label, size }) {
+  var s = size || 160;
+  var f = data.filter(function(d) { return d.value > 0; });
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+      <div style={{ position: "relative", width: s, height: s }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie data={f} dataKey="value" cx="50%" cy="50%" innerRadius={s * 0.32} outerRadius={s * 0.45} paddingAngle={2} stroke="none">
+              {f.map(function(_, i) { return <Cell key={i} fill={PAL[i % PAL.length]} />; })}
+            </Pie>
+            <Tooltip contentStyle={TT} />
+          </PieChart>
+        </ResponsiveContainer>
+        <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", textAlign: "center" }}>
+          <div style={{ fontSize: s * 0.22, fontWeight: 800, color: C.td, lineHeight: 1, fontFamily: "Fraunces" }}>{total}</div>
+          <div style={{ fontSize: 9, color: C.tm, marginTop: 2, fontFamily: "Montserrat" }}>{label}</div>
+        </div>
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 8px", justifyContent: "center", maxWidth: s + 60 }}>
+        {f.map(function(d, i) {
+          return (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 9, color: C.tm, fontFamily: "Montserrat" }}>
+              <div style={{ width: 6, height: 6, borderRadius: 2, background: PAL[i % PAL.length], flexShrink: 0 }} />
+              <span>{d.name}: {d.value}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Filter helper ──
+var HIDDEN_PEOPLE = ["Fabio Makita", "Rodrigo Araujo"];
+var MIN_AVG_SPRINT = 9; // Média só conta sprints >= 9
+
+function matchesPerson(taskPeople, persons) {
+  if (persons.length === 0) return true;
+  for (var i = 0; i < persons.length; i++) {
+    if (taskPeople.indexOf(persons[i]) >= 0) return true;
+  }
+  return false;
+}
+
+function filterTasks(tasks, team, persons) {
+  return tasks.filter(function(t) {
+    if (team !== "all" && t.team !== team) return false;
+    if (!matchesPerson(t.people, persons)) return false;
+    return true;
+  });
+}
+
+function filterRecsBySprint(records, sp, team, persons) {
+  return records.filter(function(r) {
+    if (r.sprints.indexOf(sp) < 0) return false;
+    if (team !== "all" && r.team !== team) return false;
+    if (!matchesPerson(r.people, persons)) return false;
+    return true;
+  });
+}
+
+// ── Tab: Sprint Atual ──
+function TabCurrent({ currentTasks, team, persons, agg, sprints, allRecords }) {
+  var tasks = filterTasks(currentTasks, team, persons);
+  var totalEst = tasks.reduce(function(s, t) { return s + t.est; }, 0);
+  var totalReal = tasks.reduce(function(s, t) { return s + t.real; }, 0);
+  var doneEst = tasks.filter(function(t) { return t.status === "Prod"; }).reduce(function(s, t) { return s + t.est; }, 0);
+  var doneReal = tasks.filter(function(t) { return t.status === "Prod"; }).reduce(function(s, t) { return s + t.real; }, 0);
+  var sustTasks = tasks.filter(function(t) { return t.sust; });
+  var pct = totalEst > 0 ? Math.round(doneEst / totalEst * 100) : 0;
+  var estVsReal = totalEst > 0 ? Math.round((totalReal - totalEst) / totalEst * 100) : 0;
+
+  // Average done per sprint (historical)
+  var donePerSprint = sprints.map(function(sp) {
+    if (persons.length > 0) {
+      return filterRecsBySprint(allRecords, sp, team, persons).filter(function(r) { return isDoneInSprint(r, sp); }).reduce(function(s, r) { return s + r.est; }, 0);
+    }
+    var items = agg.filter(function(a) { return a.sprint === sp && (team === "all" || a.team === team); });
+    return items.reduce(function(s, a) { return s + a.de; }, 0);
+  });
+  var doneWithSprint = sprints.map(function(sp, i) { return { sp: sp, done: donePerSprint[i] }; });
+  // Fixed average: sprints >= MIN_AVG_SPRINT with done > 0
+  var eligibleDone = doneWithSprint.filter(function(d) { return d.sp >= MIN_AVG_SPRINT && d.done > 0; });
+  var avgFixed = eligibleDone.length > 0 ? Math.round(eligibleDone.reduce(function(s, d) { return s + d.done; }, 0) / eligibleDone.length) : 0;
+  // Moving average: last 4 sprints with done > 0
+  var movingWindow = doneWithSprint.filter(function(d) { return d.done > 0; }).slice(-4);
+  var avgMoving = movingWindow.length > 0 ? Math.round(movingWindow.reduce(function(s, d) { return s + d.done; }, 0) / movingWindow.length) : 0;
+
+  var statusData = ST_ORDER.map(function(st) {
+    var matching = tasks.filter(function(t) { return t.status === st; });
+    return { name: ST_SHORT[st] || st, fullSt: st, value: matching.reduce(function(s, t) { return s + t.est; }, 0), cards: matching.length };
+  }).filter(function(d) { return d.cards > 0; });
+
+  // User Stories
+  var usMap = {};
+  tasks.forEach(function(t) {
+    var key = t.us || "Sem User Story";
+    if (!usMap[key]) usMap[key] = { name: key, est: 0, real: 0, done: 0, total: 0, tasks: [] };
+    usMap[key].est += t.est;
+    usMap[key].real += t.real;
+    usMap[key].total++;
+    if (t.status === "Prod") usMap[key].done += t.est;
+    usMap[key].tasks.push(t);
+  });
+  var userStories = Object.values(usMap).sort(function(a, b) { return b.est - a.est; });
+
+  var usChart = userStories.map(function(us) {
+    return {
+      name: us.name.length > 28 ? us.name.substring(0, 28) + "…" : us.name,
+      estimado: us.est, realizado: us.real, done: us.done,
+    };
+  });
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <Stat label="SP Estimado" value={totalEst} sub={tasks.length + " cards"} />
+        <Stat label="SP Done" value={doneReal} sub={"de " + doneEst + " est."} accent={C.g1} />
+        <Stat label="Est. vs Real." value={(estVsReal >= 0 ? "+" : "") + estVsReal + "%"} sub={totalEst + " est → " + totalReal + " real"} accent={Math.abs(estVsReal) <= 15 ? C.g1 : "#F59E0B"} />
+        <Stat label="Conclusão" value={pct + "%"} sub={doneEst + "/" + totalEst + " SP"} accent={pct >= 70 ? C.g1 : pct >= 40 ? "#F59E0B" : C.coral} />
+        <Stat label="Sustentação" value={sustTasks.reduce(function(s, t) { return s + t.est; }, 0)} sub={sustTasks.length + " cards"} accent={C.coral} />
+        <Stat label="Média Fixa" value={avgFixed} sub={"SP/sprint (S" + MIN_AVG_SPRINT + "+)"} accent={C.g3} />
+        <Stat label="Média Móvel" value={avgMoving} sub="SP/sprint (últ. 4)" accent={C.purple} />
+      </div>
+
+      <div style={{ display: "flex", gap: 20, flexWrap: "wrap", justifyContent: "center" }}>
+        <Box title="Story Points por Status">
+          <Donut data={statusData.map(function(d) { return { name: d.name, value: d.value }; })} total={totalEst} label="SP Estimado" />
+        </Box>
+        <Box title="Cards por Status">
+          <Donut data={statusData.map(function(d) { return { name: d.name, value: d.cards }; })} total={tasks.length} label="Cards" />
+        </Box>
+      </div>
+
+      {/* Progress bar */}
+      <Box title="Progresso por Status">
+        <div style={{ display: "flex", gap: 3, height: 28, borderRadius: 10, overflow: "hidden" }}>
+          {statusData.map(function(d, i) {
+            var p = totalEst > 0 ? (d.value / totalEst * 100) : 0;
+            if (p <= 0) return null;
+            return (
+              <div key={i} style={{ width: p + "%", background: ST_COLOR[d.fullSt] || PAL[i], display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: "#fff", minWidth: p > 6 ? 24 : 0, fontFamily: "Montserrat" }}>
+                {p > 8 ? Math.round(p) + "%" : ""}
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+          {statusData.map(function(d, i) {
+            return (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 9, color: C.tm, fontFamily: "Montserrat" }}>
+                <div style={{ width: 6, height: 6, borderRadius: 2, background: ST_COLOR[d.fullSt] || PAL[i] }} />
+                {d.name}: {d.value} SP ({d.cards})
+              </div>
+            );
+          })}
+        </div>
+      </Box>
+
+      {/* User Story chart */}
+      {usChart.length > 1 && (
+        <Box title="Story Points por User Story">
+          <ResponsiveContainer width="100%" height={Math.max(200, usChart.length * 42)}>
+            <BarChart data={usChart} layout="vertical" margin={{ left: 10, right: 20 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.mint} horizontal={false} />
+              <XAxis type="number" tick={{ fill: C.tm, fontSize: 10, fontFamily: "Montserrat" }} />
+              <YAxis type="category" dataKey="name" tick={{ fill: C.tm, fontSize: 10, fontFamily: "Montserrat" }} width={160} />
+              <Tooltip contentStyle={TT} />
+              <Legend wrapperStyle={{ fontSize: 10, fontFamily: "Montserrat" }} />
+              <Bar dataKey="estimado" name="Estimado" fill={C.g2} radius={[0, 6, 6, 0]} barSize={18} />
+              <Bar dataKey="realizado" name="Realizado" fill={C.g1} radius={[0, 6, 6, 0]} barSize={18} />
+            </BarChart>
+          </ResponsiveContainer>
+        </Box>
+      )}
+
+      {/* User Story detail */}
+      <Box title="User Stories — Detalhe">
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {userStories.map(function(us, idx) {
+            var donePct = us.est > 0 ? Math.round(us.done / us.est * 100) : 0;
+            return (
+              <div key={idx} style={{ border: "1px solid " + C.mint, borderRadius: 12, overflow: "hidden" }}>
+                <div style={{ padding: "12px 16px", background: C.lg, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 200 }}>
+                    <div style={{ width: 4, height: 32, borderRadius: 2, background: PAL[idx % PAL.length], flexShrink: 0 }} />
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: C.td, fontFamily: "Montserrat" }}>{us.name}</div>
+                      <div style={{ fontSize: 10, color: C.tm, fontFamily: "Montserrat" }}>{us.total} tasks · {us.est} SP est. · {us.done} SP done</div>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div style={{ width: 80, height: 8, borderRadius: 4, background: C.mint, overflow: "hidden" }}>
+                      <div style={{ width: donePct + "%", height: "100%", borderRadius: 4, background: donePct >= 70 ? C.g1 : donePct >= 30 ? "#F59E0B" : C.coral }} />
+                    </div>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: donePct >= 70 ? C.g1 : donePct >= 30 ? "#F59E0B" : C.coral, fontFamily: "Montserrat", minWidth: 36, textAlign: "right" }}>{donePct}%</span>
+                  </div>
+                </div>
+                <div style={{ padding: "4px 16px 8px" }}>
+                  {us.tasks.sort(function(a, b) { return ST_ORDER.indexOf(a.status) - ST_ORDER.indexOf(b.status); }).map(function(t, ti) {
+                    return (
+                      <div key={ti} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: ti < us.tasks.length - 1 ? ("1px solid " + C.lg) : "none" }}>
+                        <span style={{ fontSize: 8, fontWeight: 700, padding: "2px 6px", borderRadius: 4, background: (ST_COLOR[t.status] || "#999") + "15", color: ST_COLOR[t.status] || "#999", minWidth: 42, textAlign: "center", flexShrink: 0, fontFamily: "Montserrat" }}>
+                          {ST_SHORT[t.status] || t.status}
+                        </span>
+                        <span style={{ fontSize: 11, color: C.td, flex: 1, fontFamily: "Montserrat" }}>{t.name}</span>
+                        {t.sust && <span style={{ fontSize: 7, padding: "1px 5px", borderRadius: 3, background: C.coral + "15", color: C.coral, fontWeight: 700, flexShrink: 0, fontFamily: "Montserrat" }}>SUST</span>}
+                        {t.assign && <span style={{ fontSize: 9, color: C.tl, fontFamily: "Montserrat", flexShrink: 0, background: C.lg, padding: "1px 6px", borderRadius: 4 }}>{t.assign.split(" ")[0]}</span>}
+                        <span style={{ fontSize: 10, color: C.tl, fontFamily: "monospace", flexShrink: 0, minWidth: 40, textAlign: "right" }}>
+                          {t.est > 0 ? (t.est + "→" + (t.real || "?")) : "—"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </Box>
+    </div>
+  );
+}
+
+// ── 3D Donut Chart ──
+function Donut3D({ data, size, depth, centerLabel, centerValue }) {
+  var sz = size || 240;
+  var dp = depth || 22;
+  var total = data.reduce(function(s, d) { return s + d.value; }, 0);
+  if (total === 0) return null;
+
+  var cx = sz / 2;
+  var cy = sz * 0.45;
+  var rx = sz * 0.38;
+  var ry = rx * 0.48;
+  var irx = rx * 0.56;
+  var iry = irx * 0.48;
+  var GAP = 0.018;
+
+  var angle = -Math.PI / 2;
+  var segs = data.filter(function(d) { return d.value > 0; }).map(function(d) {
+    var start = angle + GAP;
+    var sweep = (d.value / total) * Math.PI * 2 - GAP * 2;
+    angle += (d.value / total) * Math.PI * 2;
+    return { name: d.name, pct: Math.round(d.value / total * 100), color: d.color, start: start, end: start + sweep, sweep: sweep };
+  });
+
+  function pt(r1, r2, a) { return { x: cx + r1 * Math.cos(a), y: cy + r2 * Math.sin(a) }; }
+
+  function topArc(seg) {
+    var p1 = pt(rx, ry, seg.start); var p2 = pt(rx, ry, seg.end);
+    var p3 = pt(irx, iry, seg.end); var p4 = pt(irx, iry, seg.start);
+    var la = seg.sweep > Math.PI ? 1 : 0;
+    return "M" + p1.x + " " + p1.y + " A" + rx + " " + ry + " 0 " + la + " 1 " + p2.x + " " + p2.y + " L" + p3.x + " " + p3.y + " A" + irx + " " + iry + " 0 " + la + " 0 " + p4.x + " " + p4.y + " Z";
+  }
+
+  function sideArc(seg) {
+    // Only draw front-facing side (sin of midpoint > 0 means bottom half, visible)
+    var mid = (seg.start + seg.end) / 2;
+    if (Math.sin(mid) <= -0.1) return null;
+    // Clip to only visible portion (angles where sin > 0, i.e. 0 to PI)
+    var s = Math.max(seg.start, 0);
+    var e = Math.min(seg.end, Math.PI);
+    if (s >= e) return null;
+    var p1 = pt(rx, ry, s); var p2 = pt(rx, ry, e);
+    var la = (e - s) > Math.PI ? 1 : 0;
+    return "M" + p1.x + " " + p1.y + " A" + rx + " " + ry + " 0 " + la + " 1 " + p2.x + " " + p2.y + " L" + p2.x + " " + (p2.y + dp) + " A" + rx + " " + ry + " 0 " + la + " 0 " + p1.x + " " + (p1.y + dp) + " Z";
+  }
+
+  function darken(hex, amt) {
+    var a = amt || 55;
+    try {
+      var n = parseInt(hex.replace("#",""), 16);
+      var r = Math.max(0, ((n>>16)&255)-a);
+      var g = Math.max(0, ((n>>8)&255)-a);
+      var b = Math.max(0, (n&255)-a);
+      return "rgb(" + r + "," + g + "," + b + ")";
+    } catch(e) { return hex; }
+  }
+
+  // Sort: back first (sin < 0), front last
+  var sorted = segs.slice().sort(function(a, b) {
+    return Math.sin((a.start + a.end) / 2) - Math.sin((b.start + b.end) / 2);
+  });
+
+  var h = cy + ry + dp + 16;
+
+  return (
+    <svg width={sz} height={h} style={{ overflow: "visible", filter: "drop-shadow(0 8px 16px rgba(0,89,86,0.12))" }}>
+      {/* Sides */}
+      {sorted.map(function(seg, i) {
+        var sp = sideArc(seg);
+        return sp ? <path key={"s" + i} d={sp} fill={darken(seg.color)} /> : null;
+      })}
+      {/* Top faces */}
+      {sorted.map(function(seg, i) {
+        return <path key={"t" + i} d={topArc(seg)} fill={seg.color} />;
+      })}
+      {/* Percentage labels */}
+      {segs.filter(function(s) { return s.pct >= 8; }).map(function(seg, i) {
+        var mid = (seg.start + seg.end) / 2;
+        var lx = cx + (rx * 0.78) * Math.cos(mid);
+        var ly = cy + (ry * 0.78) * Math.sin(mid);
+        return (
+          <g key={"l" + i}>
+            <text x={lx} y={ly - 1} textAnchor="middle" fill={C.w} fontSize={11} fontWeight={800} fontFamily="Montserrat" style={{ textShadow: "0 1px 3px rgba(0,0,0,0.3)" }}>{seg.pct}%</text>
+          </g>
+        );
+      })}
+      {/* Center */}
+      {centerValue && <text x={cx} y={cy - 4} textAnchor="middle" fill={C.td} fontSize={sz * 0.14} fontWeight={800} fontFamily="Fraunces">{centerValue}</text>}
+      {centerLabel && <text x={cx} y={cy + 12} textAnchor="middle" fill={C.tm} fontSize={10} fontFamily="Montserrat">{centerLabel}</text>}
+    </svg>
+  );
+}
+
+
+function AvgLabel(props) {
+  var text = props.text || "";
+  var color = props.color || C.td;
+  var viewBox = props.viewBox || {};
+  var x = viewBox.width ? viewBox.x + viewBox.width - 8 : 40;
+  var y = (viewBox.y || 0) - 10;
+  var align = props.align || "right";
+  if (align === "left") x = (viewBox.x || 0) + 8;
+  var w = text.length * 6.5 + 16;
+  return (
+    <g>
+      <rect x={align === "right" ? x - w : x} y={y - 8} width={w} height={18} rx={9} fill={C.w} stroke={color} strokeWidth={1.5} />
+      <text x={align === "right" ? x - w / 2 : x + w / 2} y={y + 4} textAnchor="middle" fill={color} fontSize={10} fontWeight={700} fontFamily="Montserrat">{text}</text>
+    </g>
+  );
+}
+
+// ── Tab: Histórico ──
+function TabHistory({ agg, sprints, team, persons, allRecords }) {
+  var chartData = sprints.map(function(sp) {
+    if (persons.length > 0) {
+      var recs = filterRecsBySprint(allRecords, sp, team, persons);
+      var doneRecs = recs.filter(function(r) { return isDoneInSprint(r, sp); });
+      return { name: "S" + String(sp).padStart(2, "0"), sp: sp, estimado: recs.reduce(function(s, r) { return s + r.est; }, 0), realizado: recs.reduce(function(s, r) { return s + r.real; }, 0), done: doneRecs.reduce(function(s, r) { return s + r.est; }, 0) };
+    }
+    var items = agg.filter(function(a) { return a.sprint === sp && (team === "all" || a.team === team); });
+    return { name: "S" + String(sp).padStart(2, "0"), sp: sp, estimado: items.reduce(function(s, a) { return s + a.est; }, 0), realizado: items.reduce(function(s, a) { return s + a.real; }, 0), done: items.reduce(function(s, a) { return s + a.de; }, 0) };
+  });
+
+  // Fixed average (S9+)
+  var fixedData = chartData.filter(function(d) { return d.sp >= MIN_AVG_SPRINT && d.done > 0; });
+  var avgFixed = fixedData.length > 0 ? Math.round(fixedData.reduce(function(s, d) { return s + d.done; }, 0) / fixedData.length) : 0;
+  // Moving average (last 4)
+  var movData = chartData.filter(function(d) { return d.done > 0; }).slice(-4);
+  var avgMoving = movData.length > 0 ? Math.round(movData.reduce(function(s, d) { return s + d.done; }, 0) / movData.length) : 0;
+
+  // Completion % per sprint
+  var completionData = chartData.map(function(d) {
+    return { name: d.name, pct: d.estimado > 0 ? Math.round(d.done / d.estimado * 100) : 0 };
+  });
+
+  var sec = useSections("history", ["estimado", "done", "evol_done", "completion", "realizado", "evol_real"]);
+
+  var defs = {
+    estimado: { title: "Estimado por Sprint" + (team !== "all" ? " — " + team : ""), render: function() {
+      return (<ResponsiveContainer width="100%" height={240}><BarChart data={chartData}><CartesianGrid strokeDasharray="3 3" stroke={C.mint} /><XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} /><YAxis tick={{ fill: C.tm, fontSize: 11 }} /><Tooltip contentStyle={TT} /><Bar dataKey="estimado" name="Estimado" fill={C.g2} radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer>);
+    }},
+    done: { title: "Done por Sprint", render: function() {
+      return (<ResponsiveContainer width="100%" height={240}><BarChart data={chartData}><CartesianGrid strokeDasharray="3 3" stroke={C.mint} /><XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} /><YAxis tick={{ fill: C.tm, fontSize: 11 }} /><Tooltip contentStyle={TT} /><Bar dataKey="done" name="Done" fill={C.g1} radius={[6, 6, 0, 0]} /><ReferenceLine y={avgFixed} stroke={C.coral} strokeDasharray="6 4" strokeWidth={2} label={<AvgLabel text={"Fixa (S" + MIN_AVG_SPRINT + "+): " + avgFixed} color={C.coral} />} /><ReferenceLine y={avgMoving} stroke={C.purple} strokeDasharray="4 3" strokeWidth={2} label={<AvgLabel text={"Móvel (4): " + avgMoving} color={C.purple} align="left" />} /></BarChart></ResponsiveContainer>);
+    }},
+    evol_done: { title: "Evolução — Estimado vs Done", render: function() {
+      return (<ResponsiveContainer width="100%" height={240}><LineChart data={chartData}><CartesianGrid strokeDasharray="3 3" stroke={C.mint} /><XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} /><YAxis tick={{ fill: C.tm, fontSize: 11 }} /><Tooltip contentStyle={TT} /><Legend wrapperStyle={{ fontSize: 11, fontFamily: "Montserrat" }} /><Line type="monotone" dataKey="estimado" name="Estimado" stroke={C.g3} strokeWidth={2} dot={{ r: 4 }} /><Line type="monotone" dataKey="done" name="Done" stroke={C.g1} strokeWidth={2} dot={{ r: 4 }} /><ReferenceLine y={avgFixed} stroke={C.coral} strokeDasharray="6 4" strokeWidth={1.5} label={<AvgLabel text={"Fixa: " + avgFixed} color={C.coral} />} /></LineChart></ResponsiveContainer>);
+    }},
+    completion: { title: "% Conclusão por Sprint", render: function() {
+      return (<ResponsiveContainer width="100%" height={240}><BarChart data={completionData}><CartesianGrid strokeDasharray="3 3" stroke={C.mint} /><XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} /><YAxis tick={{ fill: C.tm, fontSize: 11 }} domain={[0, 100]} unit="%" /><Tooltip contentStyle={TT} formatter={function(v) { return v + "%"; }} /><Bar dataKey="pct" name="% Concluído" radius={[6, 6, 0, 0]}>{completionData.map(function(d, i) { return <Cell key={i} fill={d.pct >= 70 ? C.g1 : d.pct >= 40 ? "#F59E0B" : C.coral} />; })}</Bar></BarChart></ResponsiveContainer>);
+    }},
+    realizado: { title: "Realizado por Sprint", render: function() {
+      return (<ResponsiveContainer width="100%" height={240}><BarChart data={chartData}><CartesianGrid strokeDasharray="3 3" stroke={C.mint} /><XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} /><YAxis tick={{ fill: C.tm, fontSize: 11 }} /><Tooltip contentStyle={TT} /><Bar dataKey="realizado" name="Realizado" fill={"#F59E0B"} radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer>);
+    }},
+    evol_real: { title: "Evolução — Estimado vs Realizado", render: function() {
+      return (<ResponsiveContainer width="100%" height={240}><LineChart data={chartData}><CartesianGrid strokeDasharray="3 3" stroke={C.mint} /><XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} /><YAxis tick={{ fill: C.tm, fontSize: 11 }} /><Tooltip contentStyle={TT} /><Legend wrapperStyle={{ fontSize: 11, fontFamily: "Montserrat" }} /><Line type="monotone" dataKey="estimado" name="Estimado" stroke={C.g3} strokeWidth={2} dot={{ r: 4 }} /><Line type="monotone" dataKey="realizado" name="Realizado" stroke={"#F59E0B"} strokeWidth={2} dot={{ r: 4 }} /></LineChart></ResponsiveContainer>);
+    }},
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {renderSections(null, sec, defs)}
+    </div>
+  );
+}
+
+// ── Tab: Sustentação ──
+function TabSust({ agg, sprints, team, persons, allRecords }) {
+  var sustData = sprints.map(function(sp) {
+    if (persons.length > 0) {
+      var recs = filterRecsBySprint(allRecords, sp, team, persons);
+      return { name: "S" + String(sp).padStart(2, "0"), sust: recs.filter(function(r) { return r.sust; }).length, nao: recs.filter(function(r) { return !r.sust; }).length };
+    }
+    var items = agg.filter(function(a) { return a.sprint === sp && (team === "all" || a.team === team); });
+    return { name: "S" + String(sp).padStart(2, "0"), sust: items.filter(function(a) { return a.sust; }).reduce(function(s, a) { return s + a.cards; }, 0), nao: items.filter(function(a) { return !a.sust; }).reduce(function(s, a) { return s + a.cards; }, 0) };
+  });
+
+  var spData = sprints.map(function(sp) {
+    if (persons.length > 0) {
+      var recs = filterRecsBySprint(allRecords, sp, team, persons);
+      return { name: "S" + String(sp).padStart(2, "0"), sustSP: recs.filter(function(r) { return r.sust; }).reduce(function(s, r) { return s + r.est; }, 0), naoSP: recs.filter(function(r) { return !r.sust; }).reduce(function(s, r) { return s + r.est; }, 0) };
+    }
+    var items = agg.filter(function(a) { return a.sprint === sp && (team === "all" || a.team === team); });
+    return { name: "S" + String(sp).padStart(2, "0"), sustSP: items.filter(function(a) { return a.sust; }).reduce(function(s, a) { return s + a.est; }, 0), naoSP: items.filter(function(a) { return !a.sust; }).reduce(function(s, a) { return s + a.est; }, 0) };
+  });
+
+  var tS = sustData.reduce(function(s, d) { return s + d.sust; }, 0);
+  var tN = sustData.reduce(function(s, d) { return s + d.nao; }, 0);
+
+  var pctData = sustData.map(function(d) { return { name: d.name, pct: (d.sust + d.nao) > 0 ? Math.round(d.sust / (d.sust + d.nao) * 100) : 0 }; });
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <Stat label="Cards Sust." value={tS} accent={C.coral} />
+        <Stat label="Cards Não Sust." value={tN} accent={C.purple} />
+        <Stat label="% Sustentação" value={((tS + tN) > 0 ? Math.round(tS / (tS + tN) * 100) : 0) + "%"} accent={C.coral} />
+      </div>
+      <Box title="Cards — Sustentação vs Não">
+        <ResponsiveContainer width="100%" height={270}>
+          <BarChart data={sustData}>
+            <CartesianGrid strokeDasharray="3 3" stroke={C.mint} />
+            <XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} />
+            <YAxis tick={{ fill: C.tm, fontSize: 11 }} />
+            <Tooltip contentStyle={TT} />
+            <Legend wrapperStyle={{ fontSize: 11, fontFamily: "Montserrat" }} />
+            <Bar dataKey="sust" name="Sustentação" fill={C.coral} radius={[6, 6, 0, 0]} />
+            <Bar dataKey="nao" name="Não Sustentação" fill={C.purple} radius={[6, 6, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </Box>
+      <Box title="SP — Sustentação vs Não">
+        <ResponsiveContainer width="100%" height={270}>
+          <BarChart data={spData}>
+            <CartesianGrid strokeDasharray="3 3" stroke={C.mint} />
+            <XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} />
+            <YAxis tick={{ fill: C.tm, fontSize: 11 }} />
+            <Tooltip contentStyle={TT} />
+            <Legend wrapperStyle={{ fontSize: 11, fontFamily: "Montserrat" }} />
+            <Bar dataKey="sustSP" name="Sust. SP" fill={C.coral} radius={[6, 6, 0, 0]} />
+            <Bar dataKey="naoSP" name="Não Sust. SP" fill={C.purple} radius={[6, 6, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </Box>
+      <Box title="Evolução % Sustentação">
+        <ResponsiveContainer width="100%" height={200}>
+          <AreaChart data={pctData}>
+            <CartesianGrid strokeDasharray="3 3" stroke={C.mint} />
+            <XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} />
+            <YAxis tick={{ fill: C.tm, fontSize: 11 }} domain={[0, 100]} unit="%" />
+            <Tooltip contentStyle={TT} formatter={function(v) { return v + "%"; }} />
+            <Area type="monotone" dataKey="pct" name="% Sust." fill={C.coral + "30"} stroke={C.coral} strokeWidth={2} />
+          </AreaChart>
+        </ResponsiveContainer>
+      </Box>
+    </div>
+  );
+}
+
+// ── Tab: Burndown ──
+function TabBurndown({ agg, sprints, currentTasks, team, persons, allRecords, sprintStart }) {
+  var tasks = filterTasks(currentTasks, team, persons);
+  var totalSP = tasks.reduce(function(s, t) { return s + t.est; }, 0);
+  var doneSP = tasks.filter(function(t) { return t.status === "Prod"; }).reduce(function(s, t) { return s + t.est; }, 0);
+  var testedSP = tasks.filter(function(t) { return t.status === "Tested"; }).reduce(function(s, t) { return s + t.est; }, 0);
+  var toTestSP = tasks.filter(function(t) { return t.status === "To Test"; }).reduce(function(s, t) { return s + t.est; }, 0);
+  var devSP = tasks.filter(function(t) { return t.status === "Development"; }).reduce(function(s, t) { return s + t.est; }, 0);
+  var todoSP = tasks.filter(function(t) { return t.status === "To-do" || t.status === "Sprint Backlog" || t.status === "Backlog"; }).reduce(function(s, t) { return s + t.est; }, 0);
+  var remainingSP = totalSP - doneSP;
+
+  // Sprint = 10 business days (2 weeks)
+  var SPRINT_DAYS = 10;
+  var idealRate = totalSP / SPRINT_DAYS;
+
+  // Calculate which business day of the sprint we're on
+  // Uses the sprint start date from settings
+  var today = new Date();
+  var epoch;
+  if (sprintStart) {
+    var parts = sprintStart.split("-");
+    epoch = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+  } else {
+    // Fallback: assume sprint started on the most recent Monday
+    epoch = new Date(today);
+    var dow = epoch.getDay();
+    var mondayOffset = dow === 0 ? 6 : dow - 1;
+    epoch.setDate(epoch.getDate() - mondayOffset);
+  }
+
+  // Count business days from sprint start to today
+  var diffMs = today.getTime() - epoch.getTime();
+  var diffDays = Math.max(0, Math.floor(diffMs / 86400000));
+  var bizDay = 0;
+  for (var dd = 0; dd <= Math.min(diffDays, 13); dd++) {
+    var tmp = new Date(epoch.getTime() + dd * 86400000);
+    var wd = tmp.getDay();
+    if (wd >= 1 && wd <= 5) bizDay++;
+  }
+  var currentSprintDay = Math.min(SPRINT_DAYS, Math.max(0, bizDay));
+
+  // Build burndown with ideal + real lines
+  var bd = [];
+  for (var i = 0; i <= SPRINT_DAYS; i++) {
+    var weekNum = Math.floor(i / 5);
+    var dayInWeek = i % 5;
+    var dayLabel = "S" + (weekNum + 1) + "D" + (dayInWeek + 1);
+    if (i === 0) dayLabel = "Início";
+    if (i === SPRINT_DAYS) dayLabel = "Fim";
+
+    // Real line: start at totalSP, linearly to remainingSP at current day, null after
+    var real = null;
+    if (i === 0) {
+      real = totalSP;
+    } else if (i <= currentSprintDay) {
+      // Linear interpolation from totalSP (day 0) to remainingSP (current day)
+      real = Math.round(totalSP - (totalSP - remainingSP) * (i / currentSprintDay));
+    }
+
+    bd.push({
+      day: dayLabel,
+      ideal: Math.round(Math.max(0, totalSP - idealRate * i)),
+      real: real,
+    });
+  }
+
+  // Stacked remaining by status (shows WHERE the work is stuck)
+  var statusBreakdown = [
+    { name: "Prod (Done)", sp: doneSP, color: C.g1 },
+    { name: "Tested", sp: testedSP, color: "#3B82F6" },
+    { name: "To Test", sp: toTestSP, color: "#F59E0B" },
+    { name: "Development", sp: devSP, color: C.purple },
+    { name: "To-do / Backlog", sp: todoSP, color: C.tl },
+  ].filter(function(d) { return d.sp > 0; });
+
+  // Completion rate compared to previous sprints (sprint-over-sprint)
+  var completionData = sprints.map(function(sp) {
+    if (persons.length > 0) {
+      var recs = allRecords.filter(function(r) { return r.sprints.indexOf(sp) >= 0 && (team === "all" || r.team === team) && matchesPerson(r.people, persons); });
+      var est = recs.reduce(function(s, r) { return s + r.est; }, 0);
+      var done = recs.filter(function(r) { return isDoneInSprint(r, sp); }).reduce(function(s, r) { return s + r.est; }, 0);
+      return { name: "S" + String(sp).padStart(2, "0"), pct: est > 0 ? Math.round(done / est * 100) : 0, done: done, est: est };
+    }
+    var items = agg.filter(function(a) { return a.sprint === sp && (team === "all" || a.team === team); });
+    var est2 = items.reduce(function(s, a) { return s + a.est; }, 0);
+    var done2 = items.reduce(function(s, a) { return s + a.de; }, 0);
+    return { name: "S" + String(sp).padStart(2, "0"), pct: est2 > 0 ? Math.round(done2 / est2 * 100) : 0, done: done2, est: est2 };
+  });
+
+  // Velocity
+  var velData = sprints.map(function(sp) {
+    if (persons.length > 0) {
+      var recs = filterRecsBySprint(allRecords, sp, team, persons).filter(function(r) { return isDoneInSprint(r, sp); });
+      return { name: "S" + String(sp).padStart(2, "0"), velocity: recs.reduce(function(s, r) { return s + r.est; }, 0) };
+    }
+    var items = agg.filter(function(a) { return a.sprint === sp && (team === "all" || a.team === team); });
+    return { name: "S" + String(sp).padStart(2, "0"), velocity: items.reduce(function(s, a) { return s + a.de; }, 0) };
+  });
+  var eligibleVel = velData.filter(function(d) { var spNum = parseInt(d.name.replace("S", "")); return d.velocity > 0 && spNum >= MIN_AVG_SPRINT; });
+  var avg = eligibleVel.length > 0 ? Math.round(eligibleVel.reduce(function(s, d) { return s + d.velocity; }, 0) / eligibleVel.length) : 0;
+  var movingVel = velData.filter(function(d) { return d.velocity > 0; }).slice(-4);
+  var avgMovVel = movingVel.length > 0 ? Math.round(movingVel.reduce(function(s, d) { return s + d.velocity; }, 0) / movingVel.length) : 0;
+
+  // Projection: at current velocity, can we finish?
+  var projPct = avgMovVel > 0 ? Math.round(avgMovVel / totalSP * 100) : 0;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <Stat label="Total Sprint" value={totalSP} sub="SP Estimado" />
+        <Stat label="Concluído" value={doneSP} sub={(totalSP > 0 ? Math.round(doneSP / totalSP * 100) : 0) + "%"} accent={C.g1} />
+        <Stat label="Restante" value={remainingSP} sub={"Dev:" + devSP + " Test:" + (testedSP + toTestSP) + " To-do:" + todoSP} accent={remainingSP > avgMovVel ? C.coral : C.purple} />
+        <Stat label="Vel. Fixa" value={avg} sub={"S" + MIN_AVG_SPRINT + "+"} accent={C.g3} />
+        <Stat label="Vel. Móvel" value={avgMovVel} sub={"últ. 4 — proj. " + projPct + "%"} accent={C.purple} />
+      </div>
+
+      {/* Pipeline de SP — where is the work right now */}
+      <Box title="Pipeline de Story Points — Onde está o trabalho?">
+        <div style={{ display: "flex", gap: 3, height: 40, borderRadius: 10, overflow: "hidden", marginBottom: 12 }}>
+          {statusBreakdown.map(function(d, i) {
+            var pct = totalSP > 0 ? (d.sp / totalSP * 100) : 0;
+            if (pct <= 0) return null;
+            return (
+              <div key={i} style={{
+                width: pct + "%", background: d.color,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: pct > 10 ? 11 : 8, fontWeight: 700, color: "#fff",
+                fontFamily: "Montserrat", flexDirection: "column", lineHeight: 1.2,
+              }}>
+                {pct > 8 && <span>{d.sp} SP</span>}
+                {pct > 15 && <span style={{ fontSize: 9, opacity: 0.85 }}>{Math.round(pct)}%</span>}
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          {statusBreakdown.map(function(d, i) {
+            return (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: C.tm, fontFamily: "Montserrat" }}>
+                <div style={{ width: 8, height: 8, borderRadius: 2, background: d.color }} />
+                {d.name}: {d.sp} SP ({totalSP > 0 ? Math.round(d.sp / totalSP * 100) : 0}%)
+              </div>
+            );
+          })}
+        </div>
+      </Box>
+
+      {/* Burndown ideal line */}
+      <Box title={"Burndown — Sprint de 10 dias úteis (dia " + currentSprintDay + " de " + SPRINT_DAYS + ")"}>
+        <ResponsiveContainer width="100%" height={270}>
+          <LineChart data={bd}>
+            <CartesianGrid strokeDasharray="3 3" stroke={C.mint} />
+            <XAxis dataKey="day" tick={{ fill: C.tm, fontSize: 10, fontFamily: "Montserrat" }} />
+            <YAxis tick={{ fill: C.tm, fontSize: 11 }} />
+            <Tooltip contentStyle={TT} />
+            <Legend wrapperStyle={{ fontSize: 11, fontFamily: "Montserrat" }} />
+            <Line type="monotone" dataKey="ideal" name="Ideal" stroke={C.tl} strokeWidth={2} strokeDasharray="8 4" dot={false} />
+            <Line type="monotone" dataKey="real" name="Real" stroke={C.g1} strokeWidth={3} dot={{ r: 5, fill: C.g1, strokeWidth: 2, stroke: C.w }} connectNulls={false} />
+          </LineChart>
+        </ResponsiveContainer>
+        <div style={{ display: "flex", alignItems: "center", gap: 16, marginTop: 12, padding: "12px 16px", background: C.lg, borderRadius: 10 }}>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 9, color: C.tm, fontFamily: "Montserrat", fontWeight: 600 }}>RESTANTE (DIA {currentSprintDay})</div>
+            <div style={{ fontSize: 28, fontWeight: 800, color: remainingSP > totalSP * 0.6 ? C.coral : remainingSP > totalSP * 0.3 ? "#F59E0B" : C.g1, fontFamily: "Fraunces" }}>{remainingSP}</div>
+          </div>
+          <div style={{ flex: 1, fontSize: 11, color: C.tm, fontFamily: "Montserrat", lineHeight: 1.6 }}>
+            {remainingSP <= 0 ? "Sprint concluído!" :
+             (function() {
+               var idealRemaining = Math.round(totalSP - idealRate * currentSprintDay);
+               var diff = remainingSP - idealRemaining;
+               if (diff <= 0) return "Acima da curva ideal! " + Math.abs(diff) + " SP à frente do planejado.";
+               if (diff <= totalSP * 0.15) return "Perto da curva ideal. " + diff + " SP atrás, mas recuperável.";
+               return diff + " SP atrás do ideal. Velocidade média é " + avg + " SP/sprint.";
+             })()}
+          </div>
+        </div>
+        <div style={{ fontSize: 9, color: C.tl, marginTop: 8, fontStyle: "italic", fontFamily: "Montserrat" }}>
+          A linha Real interpola de início até o restante atual. Para pontos diários precisos, automatize snapshots via Make.
+        </div>
+      </Box>
+
+      {/* Completion % per sprint */}
+      <Box title="Taxa de Conclusão por Sprint (%)">
+        <ResponsiveContainer width="100%" height={240}>
+          <BarChart data={completionData}>
+            <CartesianGrid strokeDasharray="3 3" stroke={C.mint} />
+            <XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} />
+            <YAxis tick={{ fill: C.tm, fontSize: 11 }} domain={[0, 100]} unit="%" />
+            <Tooltip contentStyle={TT} formatter={function(v, n, p) { return n === "pct" ? v + "% (" + p.payload.done + "/" + p.payload.est + " SP)" : v; }} />
+            <Bar dataKey="pct" name="% Concluído" fill={C.g2} radius={[6, 6, 0, 0]}>
+              {completionData.map(function(d, i) { return <Cell key={i} fill={d.pct >= 70 ? C.g1 : d.pct >= 40 ? "#F59E0B" : C.coral} />; })}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </Box>
+
+      {/* Velocity */}
+      <Box title="Velocity — SP Concluídos por Sprint">
+        <ResponsiveContainer width="100%" height={240}>
+          <BarChart data={velData}>
+            <CartesianGrid strokeDasharray="3 3" stroke={C.mint} />
+            <XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} />
+            <YAxis tick={{ fill: C.tm, fontSize: 11 }} />
+            <Tooltip contentStyle={TT} />
+            <Bar dataKey="velocity" name="SP Done" fill={C.g2} radius={[6, 6, 0, 0]}>
+              {velData.map(function(_, i) { return <Cell key={i} fill={i === velData.length - 1 ? C.g1 : C.g2} />; })}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+          <div style={{ height: 2, flex: 1, background: "repeating-linear-gradient(90deg," + C.coral + " 0," + C.coral + " 8px,transparent 8px,transparent 16px)" }} />
+          <span style={{ fontSize: 10, color: C.coral, fontWeight: 700, fontFamily: "Montserrat" }}>Fixa: {avg} · Móvel: {avgMovVel} SP</span>
+          <div style={{ height: 2, flex: 1, background: "repeating-linear-gradient(90deg," + C.coral + " 0," + C.coral + " 8px,transparent 8px,transparent 16px)" }} />
+        </div>
+      </Box>
+    </div>
+  );
+}
+
+// ── Tab: Resumo Sprint (para plannings) ──
+function TabResumo({ agg, sprints, team, persons, allRecords, currentTasks }) {
+  var CURRENT_ID = "current";
+  var [selectedSp, setSelectedSp] = useState(CURRENT_ID);
+
+  var isCurrent = selectedSp === CURRENT_ID;
+  var spLabel = isCurrent ? "Sprint Atual" : "Sprint " + String(selectedSp).padStart(2, "0");
+
+  // Build records for selected sprint
+  var spRecords = isCurrent
+    ? filterTasks(currentTasks, team, persons)
+    : allRecords.filter(function(r) {
+        return r.sprints.indexOf(selectedSp) >= 0 &&
+          (team === "all" || r.team === team) &&
+          (persons.length === 0 || matchesPerson(r.people, persons));
+      });
+
+  var sp = isCurrent ? 0 : selectedSp;
+  var totalEst = spRecords.reduce(function(s, r) { return s + r.est; }, 0);
+  var totalReal = spRecords.reduce(function(s, r) { return s + r.real; }, 0);
+
+  var isDoneFn = isCurrent
+    ? function(r) { return r.status === "Prod"; }
+    : function(r) { return isDoneInSprint(r, sp); };
+
+  var doneRecs = spRecords.filter(isDoneFn);
+  var notDoneRecs = spRecords.filter(function(r) { return !isDoneFn(r); });
+  var doneSP = doneRecs.reduce(function(s, r) { return s + r.est; }, 0);
+  var notDoneSP = notDoneRecs.reduce(function(s, r) { return s + r.est; }, 0);
+  var pct = totalEst > 0 ? Math.round(doneSP / totalEst * 100) : 0;
+  var variance = totalEst > 0 ? Math.round((totalReal - totalEst) / totalEst * 100) : 0;
+
+  // Status breakdown for donut (current sprint uses status field)
+  var donutData;
+  if (isCurrent) {
+    donutData = ST_ORDER.map(function(st) {
+      var v = spRecords.filter(function(r) { return r.status === st; }).reduce(function(s, r) { return s + r.est; }, 0);
+      return { name: ST_SHORT[st] || st, value: v, color: ST_COLOR[st] || PAL[0] };
+    }).filter(function(d) { return d.value > 0; });
+  } else {
+    // For past sprint: done vs not-done
+    var testedSP = notDoneRecs.filter(function(r) { return r.status === "Tested"; }).reduce(function(s, r) { return s + r.est; }, 0);
+    var toTestSP = notDoneRecs.filter(function(r) { return r.status === "To Test"; }).reduce(function(s, r) { return s + r.est; }, 0);
+    var devSP = notDoneRecs.filter(function(r) { return r.status === "Development"; }).reduce(function(s, r) { return s + r.est; }, 0);
+    donutData = [
+      { name: "Done", value: doneSP, color: C.g1 },
+      { name: "Tested", value: testedSP, color: "#3B82F6" },
+      { name: "To Test", value: toTestSP, color: "#F59E0B" },
+      { name: "Dev", value: devSP, color: C.purple },
+      { name: "Não entregue", value: Math.max(0, notDoneSP - testedSP - toTestSP - devSP), color: C.coral },
+    ].filter(function(d) { return d.value > 0; });
+  }
+
+  // User Stories completed
+  var usMap = {};
+  doneRecs.forEach(function(r) {
+    var key = r.us || "Sem User Story";
+    if (!usMap[key]) usMap[key] = { name: key, est: 0, real: 0, count: 0 };
+    usMap[key].est += r.est; usMap[key].real += r.real; usMap[key].count++;
+  });
+  var completedUS = Object.values(usMap).sort(function(a, b) { return b.est - a.est; });
+
+  // Pending User Stories
+  var usNotDone = {};
+  notDoneRecs.forEach(function(r) {
+    var key = r.us || "Sem User Story";
+    if (!usNotDone[key]) usNotDone[key] = { name: key, est: 0, count: 0 };
+    usNotDone[key].est += r.est; usNotDone[key].count++;
+  });
+  var pendingUS = Object.values(usNotDone).sort(function(a, b) { return b.est - a.est; });
+
+  // Est vs Real per US for chart
+  var allUsMap = {};
+  spRecords.forEach(function(r) {
+    var key = r.us || "Sem User Story";
+    if (!allUsMap[key]) allUsMap[key] = { name: key, est: 0, real: 0 };
+    allUsMap[key].est += r.est; allUsMap[key].real += r.real;
+  });
+  var usEstReal = Object.values(allUsMap).sort(function(a, b) { return b.est - a.est; }).map(function(us) {
+    return { name: us.name.length > 26 ? us.name.substring(0, 26) + "…" : us.name, estimado: us.est, realizado: us.real };
+  });
+
+  // Historical avg
+  var histDone = sprints.filter(function(s2) { return s2 >= MIN_AVG_SPRINT; }).map(function(s2) {
+    var items = agg.filter(function(a) { return a.sprint === s2 && (team === "all" || a.team === team); });
+    return items.reduce(function(s, a) { return s + a.de; }, 0);
+  }).filter(function(v) { return v > 0; });
+  var avgHist = histDone.length > 0 ? Math.round(histDone.reduce(function(s, v) { return s + v; }, 0) / histDone.length) : 0;
+  var vsAvg = !isCurrent && avgHist > 0 ? Math.round((doneSP - avgHist) / avgHist * 100) : null;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {/* Sprint selector */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 11, color: C.tm, fontFamily: "Montserrat", fontWeight: 600 }}>Sprint:</div>
+        <button onClick={function() { setSelectedSp(CURRENT_ID); }} style={{
+          padding: "5px 14px", borderRadius: 16, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "Montserrat",
+          background: isCurrent ? C.g1 : C.w, color: isCurrent ? C.w : C.tm,
+          border: "1.5px solid " + (isCurrent ? C.g1 : C.mint),
+        }}>Atual</button>
+        {sprints.slice().reverse().map(function(sp2) {
+          var isActive = sp2 === selectedSp;
+          return (
+            <button key={sp2} onClick={function() { setSelectedSp(sp2); }} style={{
+              padding: "5px 12px", borderRadius: 16, cursor: "pointer", fontSize: 11, fontWeight: 600, fontFamily: "Montserrat",
+              background: isActive ? C.g2 : C.w, color: isActive ? C.w : C.tm,
+              border: "1.5px solid " + (isActive ? C.g2 : C.mint),
+            }}>S{String(sp2).padStart(2, "0")}</button>
+          );
+        })}
+      </div>
+
+      {/* Stats row */}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <Stat label="SP Estimado" value={totalEst} sub={spRecords.length + " cards"} />
+        <Stat label="SP Realizado" value={totalReal} sub={(variance >= 0 ? "+" : "") + variance + "% vs estimado"} accent={Math.abs(variance) <= 20 ? C.g1 : "#F59E0B"} />
+        <Stat label="Concluído" value={pct + "%"} sub={doneSP + " SP done de " + totalEst} accent={pct >= 70 ? C.g1 : pct >= 40 ? "#F59E0B" : C.coral} />
+        {vsAvg !== null && <Stat label="vs Média" value={(vsAvg >= 0 ? "+" : "") + vsAvg + "%"} sub={"Média: " + avgHist + " SP"} accent={vsAvg >= 0 ? C.g1 : C.coral} />}
+      </div>
+
+      {/* 3D Donut + Legend */}
+      <Box title={"Conclusão por Status — " + spLabel}>
+        <div style={{ display: "flex", gap: 24, alignItems: "center", flexWrap: "wrap", justifyContent: "center" }}>
+          <Donut3D data={donutData} size={240} depth={20} centerValue={pct + "%"} centerLabel="concluído" />
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {donutData.map(function(d, i) {
+              var itemPct = totalEst > 0 ? Math.round(d.value / totalEst * 100) : 0;
+              return (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ width: 14, height: 14, borderRadius: 4, background: d.color, flexShrink: 0 }} />
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: C.td, fontFamily: "Montserrat" }}>{d.name}</div>
+                    <div style={{ fontSize: 10, color: C.tm, fontFamily: "Montserrat" }}>{d.value} SP · {itemPct}%</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </Box>
+
+      {/* Est vs Real per User Story */}
+      {usEstReal.length > 0 && (
+        <Box title={"Estimado vs Realizado por User Story"}>
+          <ResponsiveContainer width="100%" height={Math.max(180, usEstReal.length * 42)}>
+            <BarChart data={usEstReal} layout="vertical" margin={{ left: 10, right: 20 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.mint} horizontal={false} />
+              <XAxis type="number" tick={{ fill: C.tm, fontSize: 10, fontFamily: "Montserrat" }} />
+              <YAxis type="category" dataKey="name" tick={{ fill: C.tm, fontSize: 10, fontFamily: "Montserrat" }} width={150} />
+              <Tooltip contentStyle={TT} />
+              <Legend wrapperStyle={{ fontSize: 10, fontFamily: "Montserrat" }} />
+              <Bar dataKey="estimado" name="Estimado" fill={C.g3} radius={[0, 6, 6, 0]} barSize={16} />
+              <Bar dataKey="realizado" name="Realizado" fill={"#F59E0B"} radius={[0, 6, 6, 0]} barSize={16} />
+            </BarChart>
+          </ResponsiveContainer>
+        </Box>
+      )}
+
+      {/* Completed User Stories */}
+      <Box title={"User Stories Concluídas (" + completedUS.length + ")"}>
+        {completedUS.length === 0 ? (
+          <div style={{ fontSize: 12, color: C.tl, fontFamily: "Montserrat", padding: "4px 0" }}>Nenhuma concluída neste sprint.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+            {completedUS.map(function(us, i) {
+              var vPct = us.est > 0 ? Math.round((us.real - us.est) / us.est * 100) : 0;
+              return (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 12px", borderRadius: 8, background: i % 2 === 0 ? C.lg : "transparent" }}>
+                  <div style={{ width: 4, height: 20, borderRadius: 2, background: C.g1, flexShrink: 0 }} />
+                  <span style={{ fontSize: 12, color: C.td, flex: 1, fontFamily: "Montserrat" }}>{us.name}</span>
+                  <span style={{ fontSize: 10, color: C.tm, fontFamily: "Montserrat", flexShrink: 0 }}>{us.count} tasks</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: C.td, fontFamily: "monospace", flexShrink: 0 }}>{us.est}→{us.real}</span>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: Math.abs(vPct) <= 15 ? C.g1 : "#F59E0B", fontFamily: "Montserrat", minWidth: 38, textAlign: "right", flexShrink: 0 }}>{vPct >= 0 ? "+" : ""}{vPct}%</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Box>
+
+      {/* Carryover */}
+      {pendingUS.length > 0 && (
+        <Box title={"Carryover — Não Entregue (" + pendingUS.length + " user stories, " + notDoneSP + " SP)"}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+            {pendingUS.map(function(us, i) {
+              return (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 12px", borderRadius: 8, background: i % 2 === 0 ? C.cream + "55" : "transparent" }}>
+                  <div style={{ width: 4, height: 20, borderRadius: 2, background: C.coral, flexShrink: 0 }} />
+                  <span style={{ fontSize: 12, color: C.td, flex: 1, fontFamily: "Montserrat" }}>{us.name}</span>
+                  <span style={{ fontSize: 10, color: C.tm, fontFamily: "Montserrat", flexShrink: 0 }}>{us.count} tasks</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: C.coral, fontFamily: "monospace", flexShrink: 0 }}>{us.est} SP</span>
+                </div>
+              );
+            })}
+          </div>
+        </Box>
+      )}
+    </div>
+  );
+}
+
+// ── Settings ──
+function SettingsModal({ sheetUrl, sprintStart, onSave, onClose, onImportCSV, onClear }) {
+  var [url, setUrl] = useState(sheetUrl || "");
+  var [spDate, setSpDate] = useState(sprintStart || "");
+  var [csv, setCsv] = useState("");
+  var [mode, setMode] = useState("sheets");
+  var [dragOver, setDragOver] = useState(false);
+
+  function handleFile(file) {
+    var r = new FileReader();
+    r.onload = function(e) { setCsv(e.target.result); };
+    r.readAsText(file);
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(6,40,64,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)" }} onClick={onClose}>
+      <div onClick={function(e) { e.stopPropagation(); }} style={{ background: C.w, borderRadius: 20, padding: 28, maxWidth: 560, width: "92%", boxShadow: "0 20px 60px rgba(0,89,86,0.15)", fontFamily: "Montserrat", maxHeight: "90vh", overflowY: "auto" }}>
+        <h2 style={{ fontFamily: "Fraunces", color: C.td, fontSize: 20, margin: "0 0 16px", fontWeight: 700 }}>Configuração de Dados</h2>
+
+        <div style={{ display: "flex", gap: 4, marginBottom: 20, background: C.off, borderRadius: 10, padding: 3 }}>
+          <button onClick={function() { setMode("sheets"); }} style={{ flex: 1, padding: "8px 12px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 600, fontFamily: "Montserrat", background: mode === "sheets" ? C.g1 : "transparent", color: mode === "sheets" ? C.w : C.tm }}>Google Sheets</button>
+          <button onClick={function() { setMode("csv"); }} style={{ flex: 1, padding: "8px 12px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 600, fontFamily: "Montserrat", background: mode === "csv" ? C.g1 : "transparent", color: mode === "csv" ? C.w : C.tm }}>Importar CSV</button>
+        </div>
+
+        {/* Sprint start date — shared across both modes */}
+        <div style={{ marginBottom: 16, padding: "14px 16px", background: C.lg, borderRadius: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.g3, marginBottom: 8 }}>Data de início do sprint atual</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <input type="date" value={spDate} onChange={function(e) { setSpDate(e.target.value); }}
+              style={{ padding: "8px 12px", borderRadius: 8, border: "1.5px solid " + C.mint, fontSize: 12, fontFamily: "Montserrat", color: C.td, background: C.w, flex: 1 }} />
+            <div style={{ fontSize: 10, color: C.tm, lineHeight: 1.4 }}>Usado para calcular em qual dia do sprint estamos no burndown. Atualize a cada sprint novo.</div>
+          </div>
+        </div>
+
+        {mode === "sheets" && (
+          <div>
+            <div style={{ background: C.lg, borderRadius: 10, padding: 14, marginBottom: 16, fontSize: 11, color: C.g3, lineHeight: 1.8 }}>
+              <strong>Fluxo: </strong>Notion API → Make/Script → Google Sheets → Publicar na Web (CSV) → Cole a URL aqui
+            </div>
+            <input value={url} onChange={function(e) { setUrl(e.target.value); }} placeholder="URL da planilha Google Sheets" style={{ width: "100%", padding: "12px 14px", borderRadius: 10, border: "1.5px solid " + C.mint, fontSize: 12, fontFamily: "Montserrat", color: C.td, background: C.off, boxSizing: "border-box", marginBottom: 16 }} />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={onClose} style={{ padding: "10px 20px", borderRadius: 10, border: "1px solid " + C.mint, background: "transparent", color: C.tm, fontWeight: 600, cursor: "pointer", fontSize: 12, fontFamily: "Montserrat" }}>Cancelar</button>
+              <button onClick={function() { onSave(url, spDate); }} style={{ padding: "10px 22px", borderRadius: 10, border: "none", background: C.g1, color: C.w, fontWeight: 700, cursor: "pointer", fontSize: 12, fontFamily: "Montserrat" }}>Salvar e Carregar</button>
+            </div>
+          </div>
+        )}
+
+        {mode === "csv" && (
+          <div>
+            <div
+              onDragOver={function(e) { e.preventDefault(); setDragOver(true); }}
+              onDragLeave={function() { setDragOver(false); }}
+              onDrop={function(e) { e.preventDefault(); setDragOver(false); if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); }}
+              onClick={function() { document.getElementById("csv-input").click(); }}
+              style={{ border: "2px dashed " + (dragOver ? C.g1 : C.mint), borderRadius: 12, padding: 14, background: dragOver ? C.lg : C.off, marginBottom: 12, textAlign: "center", cursor: "pointer" }}
+            >
+              <input id="csv-input" type="file" accept=".csv" style={{ display: "none" }} onChange={function(e) { if (e.target.files[0]) handleFile(e.target.files[0]); }} />
+              <div style={{ fontSize: 11, color: C.tm }}>Arraste o .csv ou clique para selecionar</div>
+            </div>
+            <textarea value={csv} onChange={function(e) { setCsv(e.target.value); }} placeholder="Ou cole o CSV aqui..." style={{ width: "100%", height: 100, borderRadius: 10, border: "1px solid " + C.mint, padding: 10, fontSize: 10, fontFamily: "monospace", color: C.td, background: C.off, resize: "vertical", boxSizing: "border-box", marginBottom: 12 }} />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={onClose} style={{ padding: "10px 20px", borderRadius: 10, border: "1px solid " + C.mint, background: "transparent", color: C.tm, fontWeight: 600, cursor: "pointer", fontSize: 12, fontFamily: "Montserrat" }}>Cancelar</button>
+              <button onClick={function() { if (csv.trim()) onImportCSV(csv, spDate); }} style={{ padding: "10px 22px", borderRadius: 10, border: "none", background: C.g1, color: C.w, fontWeight: 700, cursor: "pointer", fontSize: 12, fontFamily: "Montserrat" }}>Importar</button>
+            </div>
+          </div>
+        )}
+
+        <div style={{ borderTop: "1px solid " + C.mint, marginTop: 20, paddingTop: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontSize: 9, color: C.tl }}>Campos: Name, Time, Sprints, Status, Story Points, Sustentação, Assign, currentSprints, User Story</div>
+          <button onClick={onClear} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid " + C.coral + "33", background: C.coral + "08", color: C.coral, fontWeight: 600, cursor: "pointer", fontSize: 10, fontFamily: "Montserrat", flexShrink: 0 }}>Limpar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── MAIN ──
+var TABS = [
+  { id: "resumo", label: "Sprint", icon: "📋" },
+  { id: "history", label: "Histórico", icon: "📈" },
+  { id: "burndown", label: "Burndown", icon: "🔥" },
+];
+
+var FIXED_CSV_URL = "https://docs.google.com/spreadsheets/d/1oNzzghvqnPOw_QLArx7OE2QnJ4DlGJltJKAVIIxKNIA/edit?gid=1248229577#gid=1248229577";
+
+function App() {
+  var [tab, setTab] = useState("resumo");
+  var [team, setTeam] = useState("all");
+  var [persons, setPersons] = useState([]);
+  var [showSettings, setShowSettings] = useState(false);
+  var [records, setRecords] = useState(null);
+  var [sheetUrl, setSheetUrl] = useState(FIXED_CSV_URL);
+  var [sprintStart, setSprintStart] = useState(null);
+  var [loading, setLoading] = useState(true);
+  var [lastUpdate, setLastUpdate] = useState(null);
+  var [error, setError] = useState(null);
+  var [refreshing, setRefreshing] = useState(false);
+
+  // Load stored data
+  useEffect(function() {
+    var load = async function() {
+      try {
+        var cfg = await window.storage.get("yuca-cfg");
+        if (cfg && cfg.value) {
+          var p = JSON.parse(cfg.value);
+          setSheetUrl(p.sheetUrl || FIXED_CSV_URL);
+          setSprintStart(p.sprintStart || null);
+          setLastUpdate(p.updatedAt || null);
+        }
+      } catch (e) { /* no config yet */ }
+      try {
+        var d = await window.storage.get("yuca-records");
+        if (d && d.value) {
+          setRecords(JSON.parse(d.value));
+        }
+      } catch (e) { /* no records yet */ }
+      setLoading(false);
+    };
+    load();
+  }, []);
+
+  var fetchSheet = useCallback(async function(url) {
+    if (!url) return;
+    setRefreshing(true);
+    setError(null);
+    try {
+      var csvUrl = url;
+      var match = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+      if (match) {
+        var id = match[1];
+        var gidMatch = url.match(/gid=(\d+)/);
+        var gid = gidMatch ? gidMatch[1] : "0";
+        csvUrl = "https://docs.google.com/spreadsheets/d/" + id + "/export?format=csv&gid=" + gid;
+      }
+      var res = await fetch(csvUrl);
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      var text = await res.text();
+      var rows = parseCSV(text);
+      if (rows.length < 2) throw new Error("CSV vazio");
+      var recs = processRows(rows);
+      var now = new Date().toISOString();
+      setRecords(recs);
+      setLastUpdate(now);
+      setError(null);
+      await window.storage.set("yuca-records", JSON.stringify(recs));
+      await window.storage.set("yuca-cfg", JSON.stringify({ sheetUrl: url, sprintStart: sprintStart, updatedAt: now }));
+    } catch (e) {
+      setError("Erro: " + e.message + ". Verifique se a planilha está publicada.");
+    }
+    setRefreshing(false);
+  }, [sprintStart]);
+
+  // Auto-fetch on load
+  useEffect(function() {
+    if (!loading && sheetUrl) fetchSheet(sheetUrl);
+  }, [loading, sheetUrl, fetchSheet]);
+
+  var handleSaveSheet = useCallback(async function(url, spDate) {
+    setSheetUrl(url);
+    if (spDate) setSprintStart(spDate);
+    setShowSettings(false);
+    try { await window.storage.set("yuca-cfg", JSON.stringify({ sheetUrl: url, sprintStart: spDate || sprintStart, updatedAt: lastUpdate })); } catch (e) {}
+    fetchSheet(url);
+  }, [fetchSheet, lastUpdate, sprintStart]);
+
+  var handleImportCSV = useCallback(async function(text, spDate) {
+    var rows = parseCSV(text);
+    var recs = processRows(rows);
+    var now = new Date().toISOString();
+    setRecords(recs);
+    setLastUpdate(now);
+    if (spDate) setSprintStart(spDate);
+    setShowSettings(false);
+    try {
+      await window.storage.set("yuca-records", JSON.stringify(recs));
+      await window.storage.set("yuca-cfg", JSON.stringify({ sheetUrl: sheetUrl, sprintStart: spDate || sprintStart, updatedAt: now }));
+    } catch (e) {}
+  }, [sheetUrl, sprintStart]);
+
+  var handleClear = useCallback(async function() {
+    setRecords(null);
+    setSheetUrl(FIXED_CSV_URL);
+    setSprintStart(null);
+    setLastUpdate(null);
+    setPersons([]);
+    setShowSettings(false);
+    try { await window.storage.delete("yuca-records"); } catch (e) {}
+    try { await window.storage.delete("yuca-cfg"); } catch (e) {}
+  }, []);
+
+  var computed = useMemo(function() {
+    if (!records) return { agg: [], sprints: [], currentTasks: [], people: [] };
+    var b = aggregate(records);
+    var pSet = {};
+    records.forEach(function(r) { r.people.forEach(function(p) { pSet[p] = true; }); });
+    return {
+      agg: b.agg,
+      sprints: b.sprints,
+      currentTasks: records.filter(function(r) { return r.inCurrent; }),
+      people: Object.keys(pSet).sort(),
+    };
+  }, [records]);
+
+  if (loading) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", background: C.off }}>
+        <div style={{ fontSize: 16, color: C.g2, fontFamily: "Montserrat", fontWeight: 600 }}>Carregando...</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: C.off, minHeight: "100vh", fontFamily: "Montserrat" }}>
+      <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@400;600;700;800&family=Montserrat:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+      {/* Header */}
+      <div style={{ background: "linear-gradient(135deg, " + C.g3 + " 0%, " + C.g2 + " 50%, " + C.g1 + " 100%)", padding: "20px 20px 16px", color: C.w }}>
+        <div style={{ maxWidth: 960, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 3 }}>
+              <svg width="30" height="30" viewBox="0 0 40 40" fill="none"><rect x="2" y="2" width="36" height="36" rx="4" stroke="white" strokeWidth="2.5" /><text x="8" y="18" fill="white" fontSize="12" fontWeight="800" fontFamily="Montserrat">YU</text><text x="8" y="33" fill="white" fontSize="12" fontWeight="800" fontFamily="Montserrat">CA</text></svg>
+              <h1 style={{ fontSize: 20, fontWeight: 800, margin: 0, fontFamily: "Fraunces" }}>Sprint Dashboard</h1>
+            </div>
+            <div style={{ fontSize: 10, opacity: 0.8, marginLeft: 40 }}>
+              {lastUpdate && (new Date(lastUpdate).toLocaleDateString("pt-BR") + " " + new Date(lastUpdate).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }))}
+              {records && (" · " + records.length + " registros")}
+              {sheetUrl && " · via Google Sheets"}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            {sheetUrl && (
+              <button onClick={function() { fetchSheet(sheetUrl); }} disabled={refreshing} style={{ padding: "7px 14px", borderRadius: 8, border: "2px solid rgba(255,255,255,0.3)", background: "rgba(255,255,255,0.1)", color: C.w, fontWeight: 600, cursor: "pointer", fontSize: 11, fontFamily: "Montserrat", opacity: refreshing ? 0.5 : 1 }}>
+                {refreshing ? "⏳" : "🔄"} Atualizar
+              </button>
+            )}
+            <button onClick={function() { setShowSettings(true); }} style={{ padding: "7px 14px", borderRadius: 8, border: "2px solid rgba(255,255,255,0.3)", background: "rgba(255,255,255,0.1)", color: C.w, fontWeight: 600, cursor: "pointer", fontSize: 11, fontFamily: "Montserrat" }}>
+              ⚙️ Config
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {error && (
+        <div style={{ maxWidth: 960, margin: "12px auto 0", padding: "10px 16px", background: C.coral + "12", border: "1px solid " + C.coral + "33", borderRadius: 10, fontSize: 11, color: C.coral, fontFamily: "Montserrat" }}>{error}</div>
+      )}
+
+      <div style={{ maxWidth: 960, margin: "0 auto", padding: "16px 16px 40px" }}>
+        {!records ? (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "55vh", textAlign: "center", padding: 40 }}>
+            <div style={{ fontSize: 48, marginBottom: 12 }}>📊</div>
+            <h2 style={{ fontFamily: "Fraunces", color: C.td, fontSize: 24, margin: "0 0 8px", fontWeight: 700 }}>Carregando dados…</h2>
+            <p style={{ color: C.tm, fontSize: 12, maxWidth: 420, lineHeight: 1.7, margin: "0 0 24px", fontFamily: "Montserrat" }}>
+              Buscando os dados da planilha. Se não carregar, use o botão de configuração.
+            </p>
+            <button onClick={function() { setShowSettings(true); }} style={{ padding: "12px 28px", borderRadius: 12, border: "none", background: C.g1, color: C.w, fontWeight: 700, cursor: "pointer", fontSize: 13, fontFamily: "Montserrat", boxShadow: "0 6px 20px " + C.g1 + "44" }}>
+              ⚙️ Configurar fonte de dados
+            </button>
+          </div>
+        ) : (
+          <div>
+            {/* Filters */}
+            <div style={{ display: "flex", gap: 16, marginBottom: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
+              <div>
+                <div style={{ fontSize: 9, color: C.tl, textTransform: "uppercase", letterSpacing: 1, marginBottom: 5, fontWeight: 600 }}>Time</div>
+                <div style={{ display: "flex", gap: 4 }}>
+                  <Pill label="Todos" active={team === "all"} onClick={function() { setTeam("all"); }} color={C.g2} />
+                  <Pill label="Tech" active={team === "Tech"} onClick={function() { setTeam("Tech"); }} color={C.g3} />
+                  <Pill label="Data" active={team === "Data"} onClick={function() { setTeam("Data"); }} color={C.purple} />
+                </div>
+              </div>
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <div style={{ fontSize: 9, color: C.tl, textTransform: "uppercase", letterSpacing: 1, marginBottom: 5, fontWeight: 600 }}>Pessoa</div>
+                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                  <Pill label="Todos" active={persons.length === 0} onClick={function() { setPersons([]); }} />
+                  {computed.people.filter(function(p) { return HIDDEN_PEOPLE.indexOf(p) < 0; }).map(function(p) {
+                    var isActive = persons.indexOf(p) >= 0;
+                    return <Pill key={p} label={p.split(" ")[0]} active={isActive} onClick={function() {
+                      if (isActive) {
+                        setPersons(persons.filter(function(x) { return x !== p; }));
+                      } else {
+                        setPersons(persons.concat([p]));
+                      }
+                    }} color={C.g3} />;
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Tabs */}
+            <div style={{ display: "flex", gap: 2, marginBottom: 20, background: C.w, borderRadius: 14, padding: 3, border: "1px solid " + C.mint }}>
+              {TABS.map(function(t) {
+                return (
+                  <button key={t.id} onClick={function() { setTab(t.id); }} style={{
+                    flex: 1, padding: "9px 4px", borderRadius: 11, border: "none", cursor: "pointer",
+                    fontSize: 11, fontWeight: 600, fontFamily: "Montserrat",
+                    background: tab === t.id ? C.g1 : "transparent",
+                    color: tab === t.id ? C.w : C.tm,
+                    boxShadow: tab === t.id ? ("0 2px 8px " + C.g1 + "33") : "none",
+                  }}>
+                    {t.icon} {t.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {tab === "resumo" && <TabResumo agg={computed.agg} sprints={computed.sprints} team={team} persons={persons} allRecords={records} currentTasks={computed.currentTasks} />}
+            {tab === "history" && <TabHistory agg={computed.agg} sprints={computed.sprints} team={team} persons={persons} allRecords={records} />}
+            {tab === "burndown" && <TabBurndown agg={computed.agg} sprints={computed.sprints} currentTasks={computed.currentTasks} team={team} persons={persons} allRecords={records} sprintStart={sprintStart} />}
+          </div>
+        )}
+      </div>
+
+      {showSettings && <SettingsModal sheetUrl={sheetUrl} sprintStart={sprintStart} onSave={handleSaveSheet} onClose={function() { setShowSettings(false); }} onImportCSV={handleImportCSV} onClear={handleClear} />}
+    </div>
+  );
+}
+
+var _container = document.getElementById("root");
+if (ReactDOM.createRoot) { ReactDOM.createRoot(_container).render(React.createElement(App)); }
+else { ReactDOM.render(React.createElement(App), _container); }
+</script>
+</body>
+</html>
