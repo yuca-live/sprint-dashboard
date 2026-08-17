@@ -46,6 +46,18 @@ const ST_COLOR = { Prod: C.g1, Tested: "#3B82F6", "To Test": "#F59E0B", Developm
 const ST_SHORT = { Prod: "Prod", Tested: "Tested", "To Test": "To Test", Development: "Dev", "To-do": "To-do", "Sprint Backlog": "S.BL", Backlog: "Backlog", Blocked: "Blocked" };
 const TT = { background: C.w, border: "1px solid " + C.mint, borderRadius: 10, color: C.td, fontSize: 12, fontFamily: "Montserrat" };
 
+// ── Datas PT-BR ("23 de setembro de 2025 09:41") ──
+var MONTHS_PT = { "janeiro": 0, "fevereiro": 1, "março": 2, "marco": 2, "abril": 3, "maio": 4, "junho": 5, "julho": 6, "agosto": 7, "setembro": 8, "outubro": 9, "novembro": 10, "dezembro": 11 };
+function parseBrDate(s) {
+  if (!s) return null;
+  var t = s.trim().toLowerCase();
+  var m = t.match(/(\d{1,2})\s+de\s+([a-zç]+)\s+de\s+(\d{4})(?:[ ,]+(\d{1,2}):(\d{2}))?/);
+  if (!m) return null;
+  var mon = MONTHS_PT[m[2]];
+  if (mon == null) return null;
+  return new Date(parseInt(m[3]), mon, parseInt(m[1]), m[4] ? parseInt(m[4]) : 0, m[5] ? parseInt(m[5]) : 0).getTime();
+}
+
 // ── CSV ──
 function parseCsvLine(line) {
   var result = [], cur = "", inQ = false;
@@ -107,6 +119,8 @@ function processRows(rows) {
     var us = cleanUserStory(row["User Story"] || "");
     var assignRaw = row["Assign"] || "";
     var people = assignRaw.split(",").map(function(s) { return s.trim(); }).filter(Boolean);
+    var createdAt = parseBrDate(row["Created At"] || "");
+    var doneDate = parseBrDate(row["(Auto) Done Data"] || "");
 
     for (var t = 0; t < teams.length; t++) {
       records.push({
@@ -122,6 +136,9 @@ function processRows(rows) {
         us: us,
         people: people,
         assign: people[0] || "",
+        createdAt: createdAt,
+        doneDate: doneDate,
+        hasEst: est > 0,
       });
     }
   }
@@ -156,6 +173,20 @@ function isDoneInSprint(r, sp) {
   if (!r.done) return false;
   var lastSp = r.sprints.length > 0 ? r.sprints[r.sprints.length - 1] : 0;
   return sp === lastSp;
+}
+
+// Lead time (dias) criação → conclusão; null se faltar data
+function leadDays(r) {
+  if (!r.createdAt || !r.doneDate) return null;
+  var d = (r.doneDate - r.createdAt) / 86400000;
+  return d >= 0 ? Math.round(d) : null;
+}
+
+function median(arr) {
+  if (!arr.length) return 0;
+  var s = arr.slice().sort(function(a, b) { return a - b; });
+  var mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : Math.round((s[mid - 1] + s[mid]) / 2);
 }
 
 // ── Reusable UI ──
@@ -321,6 +352,43 @@ function filterRecsBySprint(records, sp, team, persons) {
     if (!matchesPerson(r.people, persons)) return false;
     return true;
   });
+}
+
+// ── Carga por pessoa (workload) ──
+function Workload({ records }) {
+  var map = {};
+  records.forEach(function(r) {
+    var p = r.assign;
+    if (!p || HIDDEN_PEOPLE.indexOf(p) >= 0) return;
+    if (!map[p]) map[p] = { name: p, openSP: 0, doneSP: 0, openCards: 0, doneCards: 0 };
+    if (r.status === "Prod") { map[p].doneSP += r.est; map[p].doneCards++; }
+    else { map[p].openSP += r.est; map[p].openCards++; }
+  });
+  var list = Object.values(map).sort(function(a, b) { return b.openSP - a.openSP; });
+  if (!list.length) return <div style={{ fontSize: 12, color: C.tl, fontFamily: "Montserrat" }}>Sem cards com responsável neste recorte.</div>;
+  var maxSP = Math.max.apply(null, list.map(function(d) { return d.openSP + d.doneSP; })) || 1;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+      {list.map(function(d, i) {
+        return (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 80, fontSize: 11, fontWeight: 600, color: C.td, fontFamily: "Montserrat", textAlign: "right", flexShrink: 0 }}>{d.name.split(" ")[0]}</div>
+            <div style={{ flex: 1, display: "flex", height: 20, borderRadius: 6, overflow: "hidden", background: C.off, minWidth: 60 }}>
+              <div style={{ width: (d.doneSP / maxSP * 100) + "%", background: C.g1 }} title={"Concluído: " + d.doneSP + " SP"} />
+              <div style={{ width: (d.openSP / maxSP * 100) + "%", background: C.g3 }} title={"Aberto: " + d.openSP + " SP"} />
+            </div>
+            <div style={{ width: 130, fontSize: 10, color: C.tm, fontFamily: "Montserrat", flexShrink: 0 }}>
+              <b style={{ color: C.td }}>{d.openSP}</b> SP aberto · {d.openCards + d.doneCards} cards
+            </div>
+          </div>
+        );
+      })}
+      <div style={{ display: "flex", gap: 14, marginTop: 4, fontSize: 9, color: C.tm, fontFamily: "Montserrat" }}>
+        <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: C.g3, marginRight: 4, verticalAlign: "middle" }} />Aberto</span>
+        <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: C.g1, marginRight: 4, verticalAlign: "middle" }} />Concluído</span>
+      </div>
+    </div>
+  );
 }
 
 // ── Tab: Sprint Atual ──
@@ -620,14 +688,28 @@ function TabHistory({ agg, sprints, team, persons, allRecords }) {
     return { name: d.name, pct: d.estimado > 0 ? Math.round(d.done / d.estimado * 100) : 0 };
   });
 
-  var sec = useSections("history", ["estimado", "done", "evol_done", "completion", "realizado", "evol_real"]);
+  // Throughput: nº de cards concluídos por sprint
+  var throughputData = sprints.map(function(sp) {
+    var recs = filterRecsBySprint(allRecords, sp, team, persons).filter(function(r) { return isDoneInSprint(r, sp); });
+    return { name: "S" + String(sp).padStart(2, "0"), cards: recs.length };
+  });
+  // Lead time mediano (criação → conclusão) dos cards concluídos em cada sprint
+  var leadData = sprints.map(function(sp) {
+    var recs = filterRecsBySprint(allRecords, sp, team, persons).filter(function(r) { return isDoneInSprint(r, sp); });
+    var ds = recs.map(leadDays).filter(function(v) { return v != null; });
+    return { name: "S" + String(sp).padStart(2, "0"), lead: median(ds) };
+  });
+  var allLead = allRecords.filter(function(r) { return (team === "all" || r.team === team) && matchesPerson(r.people, persons) && r.done; }).map(leadDays).filter(function(v) { return v != null; });
+  var leadMedian = median(allLead);
+
+  var sec = useSections("history", ["estimado", "done", "evol_done", "completion", "throughput", "leadtime"]);
 
   var defs = {
     estimado: { title: "Estimado por Sprint" + (team !== "all" ? " — " + team : ""), render: function() {
       return (<ResponsiveContainer width="100%" height={240}><BarChart data={chartData}><CartesianGrid strokeDasharray="3 3" stroke={C.mint} /><XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} /><YAxis tick={{ fill: C.tm, fontSize: 11 }} /><Tooltip contentStyle={TT} /><Bar dataKey="estimado" name="Estimado" fill={C.g2} radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer>);
     }},
-    done: { title: "Done por Sprint", render: function() {
-      return (<ResponsiveContainer width="100%" height={240}><BarChart data={chartData}><CartesianGrid strokeDasharray="3 3" stroke={C.mint} /><XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} /><YAxis tick={{ fill: C.tm, fontSize: 11 }} /><Tooltip contentStyle={TT} /><Bar dataKey="done" name="Done" fill={C.g1} radius={[6, 6, 0, 0]} /><ReferenceLine y={avgFixed} stroke={C.coral} strokeDasharray="6 4" strokeWidth={2} label={<AvgLabel text={"Fixa (S" + MIN_AVG_SPRINT + "+): " + avgFixed} color={C.coral} />} /><ReferenceLine y={avgMoving} stroke={C.purple} strokeDasharray="4 3" strokeWidth={2} label={<AvgLabel text={"Móvel (4): " + avgMoving} color={C.purple} align="left" />} /></BarChart></ResponsiveContainer>);
+    done: { title: "Velocity — Done por Sprint", render: function() {
+      return (<ResponsiveContainer width="100%" height={240}><BarChart data={chartData}><CartesianGrid strokeDasharray="3 3" stroke={C.mint} /><XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} /><YAxis tick={{ fill: C.tm, fontSize: 11 }} /><Tooltip contentStyle={TT} /><Bar dataKey="done" name="Done" fill={C.g1} radius={[6, 6, 0, 0]} /><ReferenceLine y={avgMoving} stroke={C.purple} strokeDasharray="6 4" strokeWidth={2} label={<AvgLabel text={"Média móvel (4): " + avgMoving} color={C.purple} />} /></BarChart></ResponsiveContainer>);
     }},
     evol_done: { title: "Evolução — Estimado vs Done", render: function() {
       return (<ResponsiveContainer width="100%" height={240}><LineChart data={chartData}><CartesianGrid strokeDasharray="3 3" stroke={C.mint} /><XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} /><YAxis tick={{ fill: C.tm, fontSize: 11 }} /><Tooltip contentStyle={TT} /><Legend wrapperStyle={{ fontSize: 11, fontFamily: "Montserrat" }} /><Line type="monotone" dataKey="estimado" name="Estimado" stroke={C.g3} strokeWidth={2} dot={{ r: 4 }} /><Line type="monotone" dataKey="done" name="Done" stroke={C.g1} strokeWidth={2} dot={{ r: 4 }} /><ReferenceLine y={avgFixed} stroke={C.coral} strokeDasharray="6 4" strokeWidth={1.5} label={<AvgLabel text={"Fixa: " + avgFixed} color={C.coral} />} /></LineChart></ResponsiveContainer>);
@@ -635,11 +717,11 @@ function TabHistory({ agg, sprints, team, persons, allRecords }) {
     completion: { title: "% Conclusão por Sprint", render: function() {
       return (<ResponsiveContainer width="100%" height={240}><BarChart data={completionData}><CartesianGrid strokeDasharray="3 3" stroke={C.mint} /><XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} /><YAxis tick={{ fill: C.tm, fontSize: 11 }} domain={[0, 100]} unit="%" /><Tooltip contentStyle={TT} formatter={function(v) { return v + "%"; }} /><Bar dataKey="pct" name="% Concluído" radius={[6, 6, 0, 0]}>{completionData.map(function(d, i) { return <Cell key={i} fill={d.pct >= 70 ? C.g1 : d.pct >= 40 ? "#F59E0B" : C.coral} />; })}</Bar></BarChart></ResponsiveContainer>);
     }},
-    realizado: { title: "Realizado por Sprint", render: function() {
-      return (<ResponsiveContainer width="100%" height={240}><BarChart data={chartData}><CartesianGrid strokeDasharray="3 3" stroke={C.mint} /><XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} /><YAxis tick={{ fill: C.tm, fontSize: 11 }} /><Tooltip contentStyle={TT} /><Bar dataKey="realizado" name="Realizado" fill={"#F59E0B"} radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer>);
+    throughput: { title: "Throughput — Cards concluídos por Sprint", render: function() {
+      return (<ResponsiveContainer width="100%" height={240}><BarChart data={throughputData}><CartesianGrid strokeDasharray="3 3" stroke={C.mint} /><XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} /><YAxis tick={{ fill: C.tm, fontSize: 11 }} allowDecimals={false} /><Tooltip contentStyle={TT} /><Bar dataKey="cards" name="Cards done" fill={C.g2} radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer>);
     }},
-    evol_real: { title: "Evolução — Estimado vs Realizado", render: function() {
-      return (<ResponsiveContainer width="100%" height={240}><LineChart data={chartData}><CartesianGrid strokeDasharray="3 3" stroke={C.mint} /><XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} /><YAxis tick={{ fill: C.tm, fontSize: 11 }} /><Tooltip contentStyle={TT} /><Legend wrapperStyle={{ fontSize: 11, fontFamily: "Montserrat" }} /><Line type="monotone" dataKey="estimado" name="Estimado" stroke={C.g3} strokeWidth={2} dot={{ r: 4 }} /><Line type="monotone" dataKey="realizado" name="Realizado" stroke={"#F59E0B"} strokeWidth={2} dot={{ r: 4 }} /></LineChart></ResponsiveContainer>);
+    leadtime: { title: "Lead time mediano — criação → conclusão (dias)", render: function() {
+      return (<div><ResponsiveContainer width="100%" height={240}><LineChart data={leadData}><CartesianGrid strokeDasharray="3 3" stroke={C.mint} /><XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} /><YAxis tick={{ fill: C.tm, fontSize: 11 }} unit="d" /><Tooltip contentStyle={TT} formatter={function(v) { return v + " dias"; }} /><Line type="monotone" dataKey="lead" name="Lead mediano" stroke={C.purple} strokeWidth={2} dot={{ r: 3 }} /></LineChart></ResponsiveContainer><div style={{ fontSize: 9, color: C.tl, marginTop: 8, fontStyle: "italic", fontFamily: "Montserrat" }}>Mediana do tempo entre criação e conclusão do card (tempo no sistema — inclui espera no backlog; depende de quando o card foi criado). Mediana geral no recorte: {leadMedian} dias.</div></div>);
     }},
   };
 
@@ -827,7 +909,7 @@ function TabBurndown({ agg, sprints, currentTasks, team, persons, allRecords, sp
   var avgMovVel = movingVel.length > 0 ? Math.round(movingVel.reduce(function(s, d) { return s + d.velocity; }, 0) / movingVel.length) : 0;
 
   // Projection: at current velocity, can we finish?
-  var projPct = avgMovVel > 0 ? Math.round(avgMovVel / totalSP * 100) : 0;
+  var projPct = (avgMovVel > 0 && totalSP > 0) ? Math.round(avgMovVel / totalSP * 100) : 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
@@ -835,7 +917,6 @@ function TabBurndown({ agg, sprints, currentTasks, team, persons, allRecords, sp
         <Stat label="Total Sprint" value={totalSP} sub="SP Estimado" />
         <Stat label="Concluído" value={doneSP} sub={(totalSP > 0 ? Math.round(doneSP / totalSP * 100) : 0) + "%"} accent={C.g1} />
         <Stat label="Restante" value={remainingSP} sub={"Dev:" + devSP + " Test:" + (testedSP + toTestSP) + " To-do:" + todoSP} accent={remainingSP > avgMovVel ? C.coral : C.purple} />
-        <Stat label="Vel. Fixa" value={avg} sub={"S" + MIN_AVG_SPRINT + "+"} accent={C.g3} />
         <Stat label="Vel. Móvel" value={avgMovVel} sub={"últ. 4 — proj. " + projPct + "%"} accent={C.purple} />
       </div>
 
@@ -895,7 +976,7 @@ function TabBurndown({ agg, sprints, currentTasks, team, persons, allRecords, sp
                var diff = remainingSP - idealRemaining;
                if (diff <= 0) return "Acima da curva ideal! " + Math.abs(diff) + " SP à frente do planejado.";
                if (diff <= totalSP * 0.15) return "Perto da curva ideal. " + diff + " SP atrás, mas recuperável.";
-               return diff + " SP atrás do ideal. Velocidade média é " + avg + " SP/sprint.";
+               return diff + " SP atrás do ideal. Velocidade média (móvel) é " + avgMovVel + " SP/sprint.";
              })()}
           </div>
         </div>
@@ -904,40 +985,7 @@ function TabBurndown({ agg, sprints, currentTasks, team, persons, allRecords, sp
         </div>
       </Box>
 
-      {/* Completion % per sprint */}
-      <Box title="Taxa de Conclusão por Sprint (%)">
-        <ResponsiveContainer width="100%" height={240}>
-          <BarChart data={completionData}>
-            <CartesianGrid strokeDasharray="3 3" stroke={C.mint} />
-            <XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} />
-            <YAxis tick={{ fill: C.tm, fontSize: 11 }} domain={[0, 100]} unit="%" />
-            <Tooltip contentStyle={TT} formatter={function(v, n, p) { return n === "pct" ? v + "% (" + p.payload.done + "/" + p.payload.est + " SP)" : v; }} />
-            <Bar dataKey="pct" name="% Concluído" fill={C.g2} radius={[6, 6, 0, 0]}>
-              {completionData.map(function(d, i) { return <Cell key={i} fill={d.pct >= 70 ? C.g1 : d.pct >= 40 ? "#F59E0B" : C.coral} />; })}
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
-      </Box>
-
-      {/* Velocity */}
-      <Box title="Velocity — SP Concluídos por Sprint">
-        <ResponsiveContainer width="100%" height={240}>
-          <BarChart data={velData}>
-            <CartesianGrid strokeDasharray="3 3" stroke={C.mint} />
-            <XAxis dataKey="name" tick={{ fill: C.tm, fontSize: 11, fontFamily: "Montserrat" }} />
-            <YAxis tick={{ fill: C.tm, fontSize: 11 }} />
-            <Tooltip contentStyle={TT} />
-            <Bar dataKey="velocity" name="SP Done" fill={C.g2} radius={[6, 6, 0, 0]}>
-              {velData.map(function(_, i) { return <Cell key={i} fill={i === velData.length - 1 ? C.g1 : C.g2} />; })}
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
-          <div style={{ height: 2, flex: 1, background: "repeating-linear-gradient(90deg," + C.coral + " 0," + C.coral + " 8px,transparent 8px,transparent 16px)" }} />
-          <span style={{ fontSize: 10, color: C.coral, fontWeight: 700, fontFamily: "Montserrat" }}>Fixa: {avg} · Móvel: {avgMovVel} SP</span>
-          <div style={{ height: 2, flex: 1, background: "repeating-linear-gradient(90deg," + C.coral + " 0," + C.coral + " 8px,transparent 8px,transparent 16px)" }} />
-        </div>
-      </Box>
+      {/* Velocity e taxa de conclusão por sprint agora vivem na aba Histórico */}
     </div>
   );
 }
@@ -973,6 +1021,7 @@ function TabResumo({ agg, sprints, team, persons, allRecords, currentTasks }) {
   var notDoneSP = notDoneRecs.reduce(function(s, r) { return s + r.est; }, 0);
   var pct = totalEst > 0 ? Math.round(doneSP / totalEst * 100) : 0;
   var variance = totalEst > 0 ? Math.round((totalReal - totalEst) / totalEst * 100) : 0;
+  var noEst = spRecords.filter(function(r) { return !r.hasEst; }).length;
 
   // Status breakdown for donut (current sprint uses status field)
   var donutData;
@@ -1056,10 +1105,10 @@ function TabResumo({ agg, sprints, team, persons, allRecords, currentTasks }) {
 
       {/* Stats row */}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-        <Stat label="SP Estimado" value={totalEst} sub={spRecords.length + " cards"} />
-        <Stat label="SP Realizado" value={totalReal} sub={(variance >= 0 ? "+" : "") + variance + "% vs estimado"} accent={Math.abs(variance) <= 20 ? C.g1 : "#F59E0B"} />
-        <Stat label="Concluído" value={pct + "%"} sub={doneSP + " SP done de " + totalEst} accent={pct >= 70 ? C.g1 : pct >= 40 ? "#F59E0B" : C.coral} />
+        <Stat label="SP Planejado" value={totalEst} sub={spRecords.length + " cards"} />
+        <Stat label="Concluído" value={pct + "%"} sub={doneSP + " SP de " + totalEst} accent={pct >= 70 ? C.g1 : pct >= 40 ? "#F59E0B" : C.coral} />
         {vsAvg !== null && <Stat label="vs Média" value={(vsAvg >= 0 ? "+" : "") + vsAvg + "%"} sub={"Média: " + avgHist + " SP"} accent={vsAvg >= 0 ? C.g1 : C.coral} />}
+        <Stat label="Cards s/ estimativa" value={noEst} sub={noEst > 0 ? "risco de previsão" : "tudo estimado"} accent={noEst > 0 ? "#F59E0B" : C.g1} />
       </div>
 
       {/* 3D Donut + Legend */}
@@ -1083,22 +1132,10 @@ function TabResumo({ agg, sprints, team, persons, allRecords, currentTasks }) {
         </div>
       </Box>
 
-      {/* Est vs Real per User Story */}
-      {usEstReal.length > 0 && (
-        <Box title={"Estimado vs Realizado por User Story"}>
-          <ResponsiveContainer width="100%" height={Math.max(180, usEstReal.length * 42)}>
-            <BarChart data={usEstReal} layout="vertical" margin={{ left: 10, right: 20 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={C.mint} horizontal={false} />
-              <XAxis type="number" tick={{ fill: C.tm, fontSize: 10, fontFamily: "Montserrat" }} />
-              <YAxis type="category" dataKey="name" tick={{ fill: C.tm, fontSize: 10, fontFamily: "Montserrat" }} width={150} />
-              <Tooltip contentStyle={TT} />
-              <Legend wrapperStyle={{ fontSize: 10, fontFamily: "Montserrat" }} />
-              <Bar dataKey="estimado" name="Estimado" fill={C.g3} radius={[0, 6, 6, 0]} barSize={16} />
-              <Bar dataKey="realizado" name="Realizado" fill={"#F59E0B"} radius={[0, 6, 6, 0]} barSize={16} />
-            </BarChart>
-          </ResponsiveContainer>
-        </Box>
-      )}
+      {/* Carga por pessoa */}
+      <Box title={"Carga por Pessoa — " + spLabel}>
+        <Workload records={spRecords} />
+      </Box>
 
       {/* Completed User Stories */}
       <Box title={"User Stories Concluídas (" + completedUS.length + ")"}>
