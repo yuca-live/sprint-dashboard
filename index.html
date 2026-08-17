@@ -161,7 +161,7 @@ function aggregate(records) {
       map[k].est += r.est;
       map[k].real += r.real;
       // Done only counts in the LAST sprint (where it was actually delivered)
-      if (r.done && sp === lastSp) { map[k].dc++; map[k].de += r.est; map[k].dr += r.real; }
+      if (r.done && sp === lastSp) { map[k].dc++; map[k].de += spOf(r); map[k].dr += r.real; }
     }
   }
   var sprints = Object.keys(allSp).map(Number).filter(function(s) { return s > 0; }).sort(function(a, b) { return a - b; });
@@ -188,6 +188,9 @@ function median(arr) {
   var mid = Math.floor(s.length / 2);
   return s.length % 2 ? s[mid] : Math.round((s[mid - 1] + s[mid]) / 2);
 }
+
+// SP de entrega: usa Realizado quando existe, senão o Estimado
+function spOf(r) { return r.real > 0 ? r.real : r.est; }
 
 // ── Reusable UI ──
 function Pill({ label, active, onClick, color }) {
@@ -670,7 +673,7 @@ function TabHistory({ agg, sprints, team, persons, allRecords }) {
     if (persons.length > 0) {
       var recs = filterRecsBySprint(allRecords, sp, team, persons);
       var doneRecs = recs.filter(function(r) { return isDoneInSprint(r, sp); });
-      return { name: "S" + String(sp).padStart(2, "0"), sp: sp, estimado: recs.reduce(function(s, r) { return s + r.est; }, 0), realizado: recs.reduce(function(s, r) { return s + r.real; }, 0), done: doneRecs.reduce(function(s, r) { return s + r.est; }, 0) };
+      return { name: "S" + String(sp).padStart(2, "0"), sp: sp, estimado: recs.reduce(function(s, r) { return s + r.est; }, 0), realizado: recs.reduce(function(s, r) { return s + r.real; }, 0), done: doneRecs.reduce(function(s, r) { return s + spOf(r); }, 0) };
     }
     var items = agg.filter(function(a) { return a.sprint === sp && (team === "all" || a.team === team); });
     return { name: "S" + String(sp).padStart(2, "0"), sp: sp, estimado: items.reduce(function(s, a) { return s + a.est; }, 0), realizado: items.reduce(function(s, a) { return s + a.real; }, 0), done: items.reduce(function(s, a) { return s + a.de; }, 0) };
@@ -803,7 +806,7 @@ function TabSust({ agg, sprints, team, persons, allRecords }) {
 function TabBurndown({ agg, sprints, currentTasks, team, persons, allRecords, sprintStart }) {
   var tasks = filterTasks(currentTasks, team, persons);
   var totalSP = tasks.reduce(function(s, t) { return s + t.est; }, 0);
-  var doneSP = tasks.filter(function(t) { return t.status === "Prod"; }).reduce(function(s, t) { return s + t.est; }, 0);
+  var doneSP = tasks.filter(function(t) { return t.status === "Prod"; }).reduce(function(s, t) { return s + spOf(t); }, 0);
   var testedSP = tasks.filter(function(t) { return t.status === "Tested"; }).reduce(function(s, t) { return s + t.est; }, 0);
   var toTestSP = tasks.filter(function(t) { return t.status === "To Test"; }).reduce(function(s, t) { return s + t.est; }, 0);
   var devSP = tasks.filter(function(t) { return t.status === "Development"; }).reduce(function(s, t) { return s + t.est; }, 0);
@@ -892,7 +895,7 @@ function TabBurndown({ agg, sprints, currentTasks, team, persons, allRecords, sp
   var velData = sprints.map(function(sp) {
     if (persons.length > 0) {
       var recs = filterRecsBySprint(allRecords, sp, team, persons).filter(function(r) { return isDoneInSprint(r, sp); });
-      return { name: "S" + String(sp).padStart(2, "0"), velocity: recs.reduce(function(s, r) { return s + r.est; }, 0) };
+      return { name: "S" + String(sp).padStart(2, "0"), velocity: recs.reduce(function(s, r) { return s + spOf(r); }, 0) };
     }
     var items = agg.filter(function(a) { return a.sprint === sp && (team === "all" || a.team === team); });
     return { name: "S" + String(sp).padStart(2, "0"), velocity: items.reduce(function(s, a) { return s + a.de; }, 0) };
@@ -1011,7 +1014,7 @@ function TabResumo({ agg, sprints, team, persons, allRecords, currentTasks }) {
 
   var doneRecs = spRecords.filter(isDoneFn);
   var notDoneRecs = spRecords.filter(function(r) { return !isDoneFn(r); });
-  var doneSP = doneRecs.reduce(function(s, r) { return s + r.est; }, 0);
+  var doneSP = doneRecs.reduce(function(s, r) { return s + spOf(r); }, 0);
   var notDoneSP = notDoneRecs.reduce(function(s, r) { return s + r.est; }, 0);
   var pct = totalEst > 0 ? Math.round(doneSP / totalEst * 100) : 0;
   var variance = totalEst > 0 ? Math.round((totalReal - totalEst) / totalEst * 100) : 0;
@@ -1021,7 +1024,7 @@ function TabResumo({ agg, sprints, team, persons, allRecords, currentTasks }) {
   var donutData;
   if (isCurrent) {
     donutData = ST_ORDER.map(function(st) {
-      var v = spRecords.filter(function(r) { return r.status === st; }).reduce(function(s, r) { return s + r.est; }, 0);
+      var v = spRecords.filter(function(r) { return r.status === st; }).reduce(function(s, r) { return s + spOf(r); }, 0);
       return { name: ST_SHORT[st] || st, value: v, color: ST_COLOR[st] || PAL[0] };
     }).filter(function(d) { return d.value > 0; });
   } else {
