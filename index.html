@@ -330,7 +330,7 @@ function Donut({ data, total, label, size }) {
 }
 
 // ── Filter helper ──
-var HIDDEN_PEOPLE = ["Fabio Makita", "Rodrigo Araujo"];
+var HIDDEN_PEOPLE = ["Fabio Makita", "Rodrigo Araujo", "Hugo Lucena"];
 var MIN_AVG_SPRINT = 9; // Média só conta sprints >= 9
 
 function matchesPerson(taskPeople, persons) {
@@ -992,6 +992,8 @@ function TabBurndown({ agg, sprints, currentTasks, team, persons, allRecords, sp
 function TabResumo({ agg, sprints, team, persons, allRecords, currentTasks }) {
   var CURRENT_ID = "current";
   var [selectedSp, setSelectedSp] = useState(CURRENT_ID);
+  var [showAllSprints, setShowAllSprints] = useState(false);
+  var VISIBLE_SPRINTS = 5;
 
   var isCurrent = selectedSp === CURRENT_ID;
   var spLabel = isCurrent ? "Sprint Atual" : "Sprint " + String(selectedSp).padStart(2, "0");
@@ -1089,16 +1091,27 @@ function TabResumo({ agg, sprints, team, persons, allRecords, currentTasks }) {
           background: isCurrent ? C.g1 : C.w, color: isCurrent ? C.w : C.tm,
           border: "1.5px solid " + (isCurrent ? C.g1 : C.mint),
         }}>Atual</button>
-        {sprints.slice().reverse().map(function(sp2) {
-          var isActive = sp2 === selectedSp;
-          return (
-            <button key={sp2} onClick={function() { setSelectedSp(sp2); }} style={{
+        {(function() {
+          var ordered = sprints.slice().reverse();
+          // mostra só os N mais recentes; mantém visível o sprint selecionado, mesmo se for antigo
+          var visible = showAllSprints ? ordered : ordered.filter(function(sp2, i) { return i < VISIBLE_SPRINTS || sp2 === selectedSp; });
+          var hiddenCount = ordered.length - visible.length;
+          return visible.map(function(sp2) {
+            var isActive = sp2 === selectedSp;
+            return (
+              <button key={sp2} onClick={function() { setSelectedSp(sp2); }} style={{
+                padding: "5px 12px", borderRadius: 16, cursor: "pointer", fontSize: 11, fontWeight: 600, fontFamily: "Montserrat",
+                background: isActive ? C.g2 : C.w, color: isActive ? C.w : C.tm,
+                border: "1.5px solid " + (isActive ? C.g2 : C.mint),
+              }}>S{String(sp2).padStart(2, "0")}</button>
+            );
+          }).concat(hiddenCount > 0 || showAllSprints ? [
+            <button key="toggle-sprints" onClick={function() { setShowAllSprints(!showAllSprints); }} style={{
               padding: "5px 12px", borderRadius: 16, cursor: "pointer", fontSize: 11, fontWeight: 600, fontFamily: "Montserrat",
-              background: isActive ? C.g2 : C.w, color: isActive ? C.w : C.tm,
-              border: "1.5px solid " + (isActive ? C.g2 : C.mint),
-            }}>S{String(sp2).padStart(2, "0")}</button>
-          );
-        })}
+              background: "transparent", color: C.g2, border: "1.5px dashed " + C.mint,
+            }}>{showAllSprints ? "− Recolher" : "+ " + hiddenCount + " anteriores"}</button>
+          ] : []);
+        })()}
       </div>
 
       {/* Stats row */}
