@@ -114,7 +114,8 @@ function processRows(rows) {
     var real = parseFloat(row["Story Points - Realizado"]) || 0;
     var sust = row["Sustentação"] === "Yes";
     var done = row["Status"] === "Prod";
-    var curSp = row["currentSprints"] || "";
+    // Sheets exporta valor único como booleano TRUE e listas como "false,false,true" — comparar sem case
+    var curSp = (row["currentSprints"] || "").toLowerCase();
     var inCurrent = curSp.indexOf("true") >= 0;
     var us = cleanUserStory(row["User Story"] || "");
     var assignRaw = row["Assign"] || "";
